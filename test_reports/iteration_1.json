@@ -1,0 +1,28 @@
+{
+  "summary": "Smoke tested backend and frontend for Tkil Boiler Digital Twin. All 5 core backend endpoints work; scenario simulation drives expected physics (CO rises to 1467 ppm under Under-Air scenario in ~20s). Both PAI-S01 and PAI-S03 frontends render fully with all data-testids present, header updates via 2s polling, sidebar navigation works, scenario select drives backend state, trend tab switch works, ack-all button present.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "passed": [
+    "GET /api/state returns full snapshot with parameters[10], boi{value,zone}, combustion{o2_pct,co_ppm,quadrant,excess_air_pct,css,efficiency,guidance}, alerts[], data_quality_pct, scenario",
+    "GET /api/scenarios returns 6 scenarios and active",
+    "POST /api/scenario with valid value switches active scenario",
+    "POST /api/scenario with unknown returns 400",
+    "POST /api/alerts/{id}/ack returns ok=true",
+    "POST /api/alerts/ack-all returns count",
+    "Under-Air / CO Risk scenario: co_ppm rose 322 -> 1467 over ~20s (physics correct)",
+    "Frontend loads, sidebar has S01+S03 links, URL changes on click",
+    "Header shows Unit Load 83.2 MW, Mode STEADY STATE, DQ 100%",
+    "PAI-S01 renders BOI value (97.1), 10 param rows, waterfall, alert-list, summary, 5 trend tabs (switch works)",
+    "PAI-S03 renders o2-gauge, ea-banner, co-indicator, quadrant-plot, o2-trend, afr-strip, efficiency-card, guidance",
+    "Inject Scenario dropdown propagates to /api/state (verified via in-page fetch: scenario=Excess Air Event)",
+    "Ack-all button element present in header"
+  ],
+  "failed": [
+    {"area": "frontend/console", "issue": "Multiple Recharts warnings 'The width(-1) and height(-1) of chart should be greater than 0' during initial render", "evidence": "console warnings on S01/S03 load; charts still render correctly after resize", "priority": "LOW"}
+  ],
+  "action_items": [
+    "Optional: set explicit min-width/min-height on Recharts ResponsiveContainer parents to eliminate warnings (cosmetic only)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
