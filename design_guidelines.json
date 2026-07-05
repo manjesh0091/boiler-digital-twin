@@ -1,0 +1,135 @@
+{
+  "theme": "dark",
+  "archetype": "Control Room High-Contrast (ISA-101 Inspired)",
+  "brand": {
+    "name": "Tkil Industries pvt ltd",
+    "product": "Boiler Digital Twin",
+    "vibe": "Industrial, technical, sterile, authoritative, data-forward"
+  },
+  "colors": {
+    "background": {
+      "main": "#121212",
+      "panel": "#1E1E1E",
+      "panel_hover": "#262626"
+    },
+    "text": {
+      "primary": "#E4E4E7",
+      "secondary": "#A1A1AA",
+      "tertiary": "#71717A",
+      "inverse": "#09090B"
+    },
+    "border": {
+      "default": "#3F3F46",
+      "subtle": "#27272A"
+    },
+    "status": {
+      "normal": "#10B981",
+      "warning": "#F59E0B",
+      "critical": "#EF4444",
+      "info": "#3B82F6",
+      "inactive": "#52525B"
+    },
+    "chart": {
+      "axis": "#52525B",
+      "grid": "#27272A",
+      "line_default": "#A1A1AA",
+      "fill_subtle": "rgba(161, 161, 170, 0.1)"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Chivo, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "monospace": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "numeric_values": "MUST use JetBrains Mono or similar monospace font to prevent jitter during live updates.",
+      "units": "MUST be displayed next to every value (e.g., °C, kg/cm², % vol, mmWC) in secondary text color, slightly smaller.",
+      "headings": "Semi-condensed sans (Chivo), uppercase for panel titles, tight tracking.",
+      "hierarchy": {
+        "h1": "text-2xl font-bold tracking-tight",
+        "h2": "text-xl font-semibold",
+        "panel_title": "text-xs font-bold uppercase tracking-wider text-zinc-400",
+        "live_value_large": "text-4xl font-mono font-medium",
+        "live_value_medium": "text-2xl font-mono font-medium",
+        "live_value_small": "text-sm font-mono",
+        "unit": "text-xs font-sans text-zinc-500 ml-1"
+      }
+    }
+  },
+  "spacing_and_layout": {
+    "grid": "Control Room Grid (Dense). Mode B.",
+    "gap": "gap-2 to gap-4 maximum.",
+    "padding": "Compact: p-2 or p-3 inside panels. Dense data tables.",
+    "borders": "1px solid borders on panels to separate content, strictly square corners (rounded-none or rounded-sm). NO shadows.",
+    "sidebar": "w-64 fixed width, collapsed mode optional, purely functional navigation.",
+    "header": "h-14 fixed height, contains Unit Load MW, Operating Mode ribbon, and Data Quality badge."
+  },
+  "components": {
+    "panels": "Flat, background #1E1E1E, 1px border #3F3F46. No drop shadows.",
+    "buttons": "Square or rounded-sm. Outline or ghost by default to reduce visual noise. Solid backgrounds ONLY for active scenarios or critical actions.",
+    "status_badges": "Minimalist. Colored border with colored text on dark background, or small colored dot + text. Do NOT use large solid color blocks unless critical alarm.",
+    "tables": "Dense. text-sm or text-xs. border-b #27272A for rows. Numeric columns right-aligned with monospace font.",
+    "charts": "Recharts. Dark mode grid lines. Remove padding. Tooltips must be dark with monospace values.",
+    "gauges": "Minimalist arc with a clear pointer. Use neutral grey for track, color only for the active value if it hits warning/critical zones, otherwise keep green or neutral.",
+    "scenario_injector": "A fixed panel or dropdown in the header/sidebar for dev/demo purposes to inject 'Normal', 'Excess Air Event', etc."
+  },
+  "motion": {
+    "rules": "Functional only. No decorative animations.",
+    "transitions": "Smooth transitions for gauge pointers and trend line updates (e.g., 300ms ease-out).",
+    "alarms": "Subtle background flash or pulsating border (1Hz) for unacknowledged critical alarms."
+  },
+  "accessibility": {
+    "contrast": "Ensure text against panel background meets 4.5:1 ratio.",
+    "color_independence": "Status must never be conveyed by color alone. Add text labels (e.g., 'ERR', 'WRN', 'OK') or distinct icons next to colored elements.",
+    "focus": "Visible keyboard focus states (2px ring of primary or white color)."
+  },
+  "modules": [
+    {
+      "id": "PAI-S01",
+      "name": "Boiler Operating KPI Dashboard",
+      "features": [
+        "Composite BOI 0-100 gauge",
+        "Parameter grid with sparklines and zone chips",
+        "Deviation waterfall chart",
+        "Trend charts (tabbed by group)",
+        "Alarm log (persistent)",
+        "Daily summary"
+      ]
+    },
+    {
+      "id": "PAI-S03",
+      "name": "Combustion Excess Air Monitor",
+      "features": [
+        "O2 real-time dial",
+        "CO safety indicator (dominates if CO > 500)",
+        "CO-O2 quadrant plot with fading trail",
+        "O2 trend chart 24h",
+        "Air-Fuel Ratio (AFR) strip",
+        "Efficiency impact estimate (₹/hr card)",
+        "Operator guidance panel"
+      ]
+    }
+  ],
+  "testing": {
+    "attributes": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid=\"boiler-gauge\"`)."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1509390288171-ce2088f7d08e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxpbmR1c3RyaWFsJTIwcG93ZXIlMjBwbGFudCUyMGJvaWxlcnxlbnwwfHx8fDE3ODMyODE4MjZ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Industrial power plant image",
+      "category": "sidebar_background_subtle"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Build a strict ISA-101 style dark dashboard. Do NOT use default SaaS aesthetics (no soft shadows, no large border radii, no purple/blue gradients).",
+    "Use standard HTML/Tailwind for the layout frame and custom dense panels.",
+    "Build Recharts with strict dark mode configuration: `#27272A` grid lines, `#A1A1AA` text.",
+    "For the BOI gauge, use a custom SVG or Recharts radial bar.",
+    "Ensure the WebSocket/Polling simulation uses `setInterval` or real FastAPI websockets to stream values.",
+    "Implement the 'Inject Scenario' dropdown in the top header or sidebar to change the mocked data parameters.",
+    "Use strictly JetBrains Mono or similar monospace font for ALL numbers.",
+    "Ensure every data value displays its corresponding engineering unit.",
+    "Include `data-testid` on all buttons, tabs, and key metrics."
+  ]
+}
