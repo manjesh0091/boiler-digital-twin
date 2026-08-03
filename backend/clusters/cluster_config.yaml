@@ -1,0 +1,193 @@
+# =============================================================================
+# Cluster 1 — Load-Flow Mass Balance — tag mapping + relationship config
+# Source: backend/clusters/docs/Cluster_1_Load_Flow_Mass_Balance_Technical_Note.docx
+# =============================================================================
+# This config is consumed by:
+#   - shared/feature_extraction.py's build_feature_view()   (raw tag -> column,
+#     via clusters/cluster_features.py's build_cluster_view())
+#   - clusters/cluster_baseline.py                          (STEADY-state
+#     load-binned expected value + normal band per relationship metric)
+#   - clusters/cluster_validator.py                         (per-row residual
+#     + status: consistent / outlier / ambiguous)
+#
+# Kept separate from backend/engine/ and backend/config/ — Module 1's live
+# dashboard does not read this file.
+# =============================================================================
+
+cluster_id: cluster_1_load_flow_mass_balance
+timestamp_column: "Timestamp"
+
+# How Steam Flow-A and Steam Flow-B combine into one "Total Main Steam Flow"
+# (doc Table 2, Eq 1):
+#   series   -> Total = (A + B) / 2  -- both tags are redundant meters on the
+#               SAME steam stream, so average them.
+#   parallel -> Total = (A + B) / 1  -- tags measure two DIFFERENT streams
+#               that combine downstream, so sum them.
+# Module 1's own MAIN_STEAM_FLOW (hindalco_boiler9_pai_s01_v2.yaml) already
+# assumes "series" (aggregation: average) for the same A/B tag pair — kept
+# consistent with that existing, already-working assumption.
+steam_flow_measurement_config: series
+
+# -----------------------------------------------------------------------------
+# Members (Table 1: Scope and Variables) — raw-tag mapping, same status/
+# aggregation vocabulary as shared/feature_extraction.build_feature_view().
+# -----------------------------------------------------------------------------
+members:
+
+  LOAD:
+    status: available
+    raw_tags: ["Load"]
+    aggregation: single
+    unit: "% MCR"
+
+  STEAM_FLOW_A:
+    status: available
+    raw_tags: ["STEAM FLOW-A (MS FLOW)"]
+    aggregation: single
+    unit: TPH
+
+  STEAM_FLOW_B:
+    status: available
+    raw_tags: ["STEAM FLOW -B (MS FLOW)"]
+    aggregation: single
+    unit: TPH
+
+  FEEDWATER_FLOW:
+    status: available
+    raw_tags: ["FW FLOW TO FCS"]
+    aggregation: single
+    unit: TPH
+
+  # No real tag for spray water flow to the superheater exists in this
+  # historian export. Candidate proxy tags (CV-116 FB, CV-121 FB) exist but
+  # Module 1's config explicitly rejected them as an unclear/unverified
+  # proxy ("CV-116/121 FB proxy mapping unclear, do not use" —
+  # hindalco_boiler9_pai_s01_v2.yaml, SPRAY_WATER_FLOW_SH). Same call kept
+  # here: the water-steam balance relationship runs WITHOUT a spray term
+  # (Steam Flow Error = f(Feedwater Flow) only, not f(Feedwater, Spray) as
+  # the doc's Table 3 formula specifies) — flagged explicitly in the Phase C
+  # report rather than silently proxying it in.
+  SPRAY_WATER_FLOW:
+    status: synthetic_needed
+    raw_tags: []
+    unit: TPH
+
+  # Same derivation as Module 1's PRIMARY_AIR_FLOW (sum of two header
+  # averages) — reused here for consistency with the already-validated
+  # extraction. A raw "TOTAL PA FLOW" tag also exists in the historian CSV
+  # and matches this derivation to within ~0.02 TPH (rounding) — the derived
+  # form is used to keep a single source of truth with Module 1.
+  TOTAL_PA_FLOW:
+    status: available
+    headers:
+      HGG_A: ["PA FLOW TO HGG -A (1)", "PA FLOW TO HGG -A (2)"]
+      HGG_B: ["PA FLOW TO HGG -B (1)", "PA FLOW TO HGG -B (2)"]
+    aggregation: sum_of_header_averages
+    unit: TPH
+
+  SA_FLOW_A:
+    status: available
+    raw_tags: ["SA FLOW- A"]
+    aggregation: single
+    unit: TPH
+
+  SA_FLOW_B:
+    status: available
+    raw_tags: ["SA FLOW-B "]
+    aggregation: single
+    unit: TPH
+
+  TA_FLOW_A:
+    status: available
+    raw_tags: ["TA FLOW-A"]
+    aggregation: single
+    unit: TPH
+
+  TA_FLOW_B:
+    status: available
+    raw_tags: ["TA FLOW-B"]
+    aggregation: single
+    unit: TPH
+
+# -----------------------------------------------------------------------------
+# Relationships (Data Validation Framework). Every tolerance/band below is
+# user-configurable. Where the doc gives an explicit number, it's used
+# as-is and cited. Where it doesn't, this uses the STEADY-state historical
+# distribution itself (mean +/- band_width_std * std, learned by
+# cluster_baseline.py) rather than an invented flat percentage — consistent
+# with the doc's own "trained normal-behaviour model should generate an
+# expected value and a load-dependent normal band" (Performance Checking)
+# and its A/B-balance note that "a perfectly equal split should not be
+# assumed."
+# -----------------------------------------------------------------------------
+relationships:
+
+  steam_flow_ab_balance:
+    description: >
+      Steam Flow-A and Steam Flow-B are two measurement points on the same
+      steam stream. They should agree within tolerance; when they don't,
+      correlate each against Feedwater Flow to decide which reading to
+      trust.
+    doc_ref: "Load and Main Steam Flow (para 15-18)"
+    formula: "ab_diff_pct = |A - B| / ((A + B) / 2) * 100"
+    tolerance_pct: 3.0   # doc: "acceptable variation 3% (Example User Input)"
+    tiebreak: correlate_with_feedwater
+    # If the two candidate readings' implied water-steam-balance deviation
+    # (see water_steam_balance below) both land within this many percentage
+    # points of each other's distance from the learned normal band, neither
+    # clearly agrees better with feedwater flow -- mark "ambiguous" rather
+    # than guess. Not numerically specified in the doc; user-configurable.
+    tiebreak_ambiguous_margin_pct: 15.0
+
+  water_steam_balance:
+    description: >
+      Feedwater flow should broadly balance total steam generation, net of
+      drum inventory change, blowdown, spray-water contribution and
+      instrument uncertainty. When the resolved Total Steam Flow and
+      Feedwater Flow disagree beyond the learned normal band, correlate
+      both against Load and trust whichever the load-baseline agrees with.
+    doc_ref: "Feedwater and Steam Balance (para 19-21); Table 3; Table 4"
+    formula: "deviation_pct = (Feedwater Flow - Total Main Steam Flow) / Total Main Steam Flow * 100"
+    band_width_std: 2.0   # not numerically specified in the doc -- learned STEADY-state band used instead
+    tiebreak: correlate_with_load
+    tiebreak_ambiguous_margin_pct: 15.0
+    spray_flow_included: false   # see SPRAY_WATER_FLOW note above -- doc's Table 3 formula includes a spray term this dataset can't supply
+
+  air_vs_load_envelope:
+    description: >
+      Total combustion air (PA + SA + TA) should track load within a
+      load-dependent operating envelope learned from STEADY historical
+      data. No reconciliation is attempted on an out-of-band reading — the
+      doc defers root-cause diagnosis to a different cluster.
+    doc_ref: "Airflow Relationships and Derived Indicators; Table 5; Table 6 (Eq 2/3)"
+    formula: "Total Combustion Air = Total PA Flow + Total SA Flow + Total TA Flow"
+    band_width_std: 2.0
+    tiebreak: none
+
+  sa_ab_balance:
+    description: "Secondary-air A/B side balance (Table 7 formula, applied to SA)."
+    doc_ref: "A/B-Side Balance (para 27-28); Table 7"
+    formula: "side_dev_pct = (SA_A - SA_B) / ((SA_A + SA_B) / 2) * 100"
+    band_width_std: 2.0
+    tiebreak: none
+
+  ta_ab_balance:
+    description: "Tertiary-air A/B side balance -- same formula pattern as SA, applied to TA."
+    doc_ref: "A/B-Side Balance (para 27-28); Table 7, extended to TA by the same pattern"
+    formula: "side_dev_pct = (TA_A - TA_B) / ((TA_A + TA_B) / 2) * 100"
+    band_width_std: 2.0
+    tiebreak: none
+
+# -----------------------------------------------------------------------------
+# Baseline: STEADY-state-only, load-binned (Preparation for Training Data;
+# "Important: Start-up, shutdown, trips ... should not be mixed with healthy
+# steady-state training data").
+# -----------------------------------------------------------------------------
+baseline:
+  mode_filter: STEADY
+  # Same custom, non-uniform bins as Module 1's engine/baseline.py, and for
+  # the same reason: this plant's real historian data is almost entirely
+  # 90-111% MCR, so a uniform 10%-wide scheme would leave low-load bins too
+  # sparse to trust.
+  load_bin_edges: [0.0, 80.0, 90.0, 100.0, 110.0, 120.0]
+  min_samples: 20

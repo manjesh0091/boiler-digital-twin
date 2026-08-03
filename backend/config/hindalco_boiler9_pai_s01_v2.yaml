@@ -1,0 +1,323 @@
+# =============================================================================
+# PAI-S01 — Boiler Operating KPI Dashboard
+# Tag Mapping Config — Plant: Hindalco Boiler-9 (CFBC, Unit 4)
+# Rev 2 — incorporates user corrections + CSV-verified findings
+# =============================================================================
+# TIER MEANINGS:
+#   available            -> read directly from historian/CSV, real values
+#   derived               -> computed from other "available" tags via a formula
+#   needs_verification    -> real tag exists but its physical meaning is
+#                            uncertain (naming doesn't clearly match the
+#                            required signal). Treated as synthetic/estimated
+#                            until a plant engineer confirms it, but the
+#                            candidate raw tag is kept on record.
+#   synthetic_needed      -> tag genuinely absent; generate plausible
+#                            load-correlated series, API flags "data_source": "synthetic"
+#   optional_not_applicable -> doesn't apply to this boiler design (flips via
+#                            top-level boolean flags for a different plant)
+#   static_config         -> manually-entered constant (lab value / design value)
+# =============================================================================
+
+plant_id: hindalco_boiler9
+boiler_type: CFBC
+has_reheat_cycle: false
+has_separate_fd_fan: false
+has_soot_blower: false     # confirmed by user: no soot blower on this unit -> mode classifier excludes that state
+
+timestamp_column: "Timestamp"
+
+parameters:
+
+  UNIT_LOAD:
+    status: available
+    raw_tags: ["Load"]
+    aggregation: single
+    unit: "% MCR"     # CONFIRM: is 'Load' already %MCR, or MW needing conversion?
+
+  MAIN_STEAM_FLOW:
+    status: available
+    raw_tags: ["STEAM FLOW-A (MS FLOW)", "STEAM FLOW -B (MS FLOW)"]
+    aggregation: average
+    unit: TPH
+
+  MAIN_STEAM_PRESSURE:
+    status: available
+    raw_tags: ["SH-3 O/L STM PR-A", "SH-3 O/L STM PR-B"]
+    aggregation: average
+    unit: "kg/cm2"
+
+  MAIN_STEAM_TEMPERATURE:
+    status: available
+    raw_tags: ["SH-3 O/L STM TEMP-A", "SH-3 O/L STM TEMP-B"]
+    aggregation: average
+    unit: degC
+
+  SH_STEAM_TEMP_INLET:
+    status: available
+    per_stage: true       # keep SH1 / SH2 / SH3 separate, do not merge into one number
+    stages:
+      SH1: ["SH-1 I/L STM TEMP-A", "SH-1 I/L STM TEMP-B"]
+      SH2: ["SH-2 I/L STM TEMP-A"]
+      SH3: ["SH-3 I/L STM TEMP-A", "SH-3 I/L STM TEMP-B"]
+    aggregation: average_within_stage
+    unit: degC
+
+  SH_STEAM_TEMP_OUTLET:
+    status: available
+    per_stage: true
+    stages:
+      SH1: ["SH-1 O/L STM TEMP-A", "SH-1 O/L STM TEMP-B"]
+      SH2: ["SH-2 O/L STM TEMP-A", "SH-2 O/L STM TEMP-B"]
+      SH3: ["SH-3 O/L STM TEMP-A", "SH-3 O/L STM TEMP-B"]
+    aggregation: average_within_stage
+    unit: degC
+
+  REHEAT_STEAM_TEMP_OUTLET:
+    status: optional_not_applicable
+    raw_tags: []
+    unit: degC
+
+  REHEAT_STEAM_TEMP_INLET:
+    status: optional_not_applicable
+    raw_tags: []
+    unit: degC
+
+  FEEDWATER_FLOW:
+    status: available
+    raw_tags: ["FW FLOW TO FCS"]
+    aggregation: single
+    unit: TPH
+
+  # NOTE: 'FW I/L TEMP TO FCS' is a DIFFERENT physical point than the
+  # economizer inlet — it's upstream, at the Feedwater Control Station.
+  # Kept as its own parameter rather than merged with ECO inlet temp.
+  FEEDWATER_TEMP_TO_FCS:
+    status: available
+    raw_tags: ["FW I/L TEMP TO FCS"]
+    aggregation: single
+    unit: degC
+
+  # Only ECO-2 has a water-side tag in this plant's data. No ECO-1
+  # water-side inlet/outlet tag exists — cannot split into Eco1/Eco2
+  # as originally suggested; only one economizer stage is instrumented
+  # on the water side.
+  FEEDWATER_TEMP_ECO2_INLET:
+    status: available
+    raw_tags: ["FW I/L TO ECO-2 "]   # NOTE: trailing space in raw CSV header — kept intentionally
+    aggregation: single
+    unit: degC
+
+  FEEDWATER_TEMP_ECO2_OUTLET:
+    status: available
+    raw_tags: ["FW O/L OF ECO-2"]
+    aggregation: single
+    unit: degC
+
+  SPRAY_WATER_FLOW_SH:
+    status: synthetic_needed
+    raw_tags: []
+    # proxy intentionally removed per user: CV-116/121 FB proxy mapping unclear, do not use
+    unit: TPH
+
+  SPRAY_WATER_FLOW_RH:
+    status: optional_not_applicable
+    raw_tags: []
+    unit: TPH
+
+  DRUM_PRESSURE:
+    status: available
+    raw_tags: ["DRUM PR"]
+    aggregation: single
+    unit: "kg/cm2"
+
+  # Candidate tags exist (CV 104 A/B/C FB) but naming ("CV" = control valve)
+  # doesn't clearly confirm this is a level transmitter reading rather than
+  # a valve position feedback. Held as needs_verification until plant
+  # engineer confirms; loader.py will still pull the candidate tags so the
+  # values are visible (clearly flagged), just not asserted as ground truth.
+  DRUM_LEVEL:
+    status: needs_verification
+    candidate_raw_tags: ["CV 104 A FB", "CV 104B FB"]
+    aggregation: average
+    unit: mm
+    note: "CONFIRM WITH PLANT ENGINEER: do these tags represent drum level or feed control valve position?"
+
+  FURNACE_DRAFT:
+    status: available          # upgraded from synthetic_needed — proxy confirmed usable
+    raw_tags: ["FURNACE PR BELOW SCREEN-A", "FURNACE PR BELOW SCREEN-B", "FURNACE PR BELOW SCREEN-C"]
+    aggregation: average
+    unit: mmWC
+
+  FLUE_GAS_O2_APH_INLET:
+    status: available
+    raw_tags: ["O2 LHS", "O2 RHS"]
+    aggregation: average
+    unit: "% vol"
+
+  TOTAL_AIR_FLOW:
+    status: derived
+    derived_from: ["PRIMARY_AIR_FLOW", "SECONDARY_AIR_FLOW", "TERTIARY_AIR_FLOW"]
+    formula: sum
+    unit: TPH
+
+  SECONDARY_AIR_FLOW:
+    status: available
+    raw_tags: ["SA FLOW- A", "SA FLOW-B "]
+    aggregation: average
+    unit: TPH
+
+  TERTIARY_AIR_FLOW:
+    status: available
+    raw_tags: ["TA FLOW-A", "TA FLOW-B"]
+    aggregation: average
+    unit: TPH
+
+  # Correction: sum of two header-averages, NOT a flat average of all 4 points.
+  # PA_FLOW = avg(HGG-A(1),HGG-A(2)) + avg(HGG-B(1),HGG-B(2))
+  PRIMARY_AIR_FLOW:
+    status: available
+    headers:
+      HGG_A: ["PA FLOW TO HGG -A (1)", "PA FLOW TO HGG -A (2)"]
+      HGG_B: ["PA FLOW TO HGG -B (1)", "PA FLOW TO HGG -B (2)"]
+    aggregation: sum_of_header_averages
+    unit: TPH
+
+  CO_IN_FLUE_GAS:
+    status: available
+    raw_tags: ["CO O/L TO ECO-1"]
+    aggregation: single
+    unit: ppm
+
+  FEGT:
+    status: available
+    raw_tags: ["FG TEMP BEFORE STACK"]
+    aggregation: single
+    unit: degC
+    note: "Same raw tag as STACK_TEMPERATURE — flagged for plant engineer verification (possible spec duplication or genuinely same measurement point)."
+
+  SH_INLET_GAS_TEMP:
+    status: synthetic_needed
+    raw_tags: []
+    unit: degC
+
+  SH_OUTLET_GAS_TEMP:
+    status: synthetic_needed
+    raw_tags: []
+    unit: degC
+
+  ECONOMIZER_INLET_GAS_TEMP:
+    status: available
+    economizer_stage: "ECO-1"     # only ECO-1 gas-side tags exist in this data
+    raw_tags: ["FG TEMP ECO-1 I/L"]
+    aggregation: single
+    unit: degC
+
+  ECONOMIZER_OUTLET_GAS_TEMP:
+    status: available
+    economizer_stage: "ECO-1"
+    raw_tags: ["FG TEMP AT ECO-1 O/L"]
+    aggregation: single
+    unit: degC
+
+  APH_GAS_INLET_TEMP:
+    status: synthetic_needed
+    raw_tags: []
+    unit: degC
+
+  STACK_TEMPERATURE:
+    status: available
+    raw_tags: ["FG TEMP BEFORE STACK"]
+    aggregation: single
+    unit: degC
+
+  APH_DIFFERENTIAL_PRESSURE:
+    status: synthetic_needed
+    raw_tags: []
+    unit: mmWC
+
+  BOILER_TRIP_MFT_STATUS:
+    status: synthetic_needed
+    raw_tags: []
+    unit: boolean
+    priority: HIGH
+    note: "SAFETY-CRITICAL. Prototype/demo use only — never use synthetic value for real safety decisions."
+
+  DESIGN_STEAM_PARAMETERS:
+    status: static_config
+    values:
+      main_steam_flow_tph: 160
+      main_steam_pressure_kg_cm2: 90.2
+      design_bed_temp_degC: 850
+      design_coal_flow_tph: 28.85
+      total_air_flow_design_tph: 173.88
+      pa_flow_tph: 95.76
+      sa_flow_tph: 52.2
+      ta_flow_tph: 25.92
+      fw_temp_eco1_inlet_degC: 243.37
+      sh1_outlet_steam_temp_degC: 430
+      sh2_outlet_steam_temp_degC: 489
+      sh3_outlet_steam_temp_degC: 515
+      fg_o2_analysis_inlet_eco1: 3.21
+
+  COAL_GCV:
+    status: static_config
+    values:
+      gcv_kcal_per_kg: 3610
+      basis: "Proximate Analysis"
+    refresh_frequency: "per lab report (manual update)"
+
+  # Rule-based classifier per user's specification:
+  #  STARTUP: Main Steam Pressure rising continuously AND Main Steam Temp
+  #           ramping ~8-10 degC per 10 min AND Bed Temp not yet stable
+  #  STEADY:  all of the above roughly constant (within tight band)
+  #  LOW_LOAD: Unit Load below a low-load threshold (e.g. <40% MCR)
+  #  SOOT_BLOWING: N/A — this unit has no soot blower (has_soot_blower: false)
+  #  SHUTDOWN: Main Steam Pressure/Flow trending toward zero
+  BED_TEMP_AVG:
+    status: available
+    raw_tags: ["BED TEMP AVG"]
+    aggregation: single
+    unit: degC
+
+  OPERATING_MODE:
+    status: derived
+    derived_from: ["MAIN_STEAM_PRESSURE", "MAIN_STEAM_TEMPERATURE", "BED_TEMP_AVG", "UNIT_LOAD"]
+    formula: "rule_based_classifier (see mode_classifier.py) — states: STARTUP, STEADY, LOW_LOAD, SHUTDOWN"
+    unit: enum
+
+  FD_FAN_MOTOR_CURRENT:
+    status: optional_not_applicable   # confirmed: no separate FD fan, PA fan handles fluidization
+    raw_tags: []
+    unit: A
+
+  # Correction: kept as separate A/B parameters (not averaged), consistent
+  # with ID Fan convention.
+  SA_FAN_A_CURRENT:
+    status: available
+    raw_tags: ["SA FAN A CURRENT"]
+    unit: A
+
+  SA_FAN_B_CURRENT:
+    status: available
+    raw_tags: ["SA FAN B CURRENT"]
+    unit: A
+
+  PA_FAN_A_CURRENT:
+    status: available
+    raw_tags: ["PA FAN A VFD CURRENT"]
+    unit: A
+
+  PA_FAN_B_CURRENT:
+    status: available
+    raw_tags: ["PA FAN B VFD CURRENT"]
+    unit: A
+
+  ID_FAN_A_CURRENT:
+    status: available
+    raw_tags: ["ID FAN A BKR CURRENT"]
+    unit: A
+
+  ID_FAN_B_CURRENT:
+    status: available
+    raw_tags: ["ID FAN B BKR CURRENT"]
+    unit: A

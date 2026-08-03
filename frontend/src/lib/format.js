@@ -2,9 +2,10 @@ export const STATUS_COLOR = {
   green: "#10B981",
   amber: "#F5A623",
   red: "#EF4444",
+  grey: "#71717A",
 };
 
-export const ZONE_LABEL = { green: "OK", amber: "WRN", red: "ERR" };
+export const ZONE_LABEL = { green: "OK", amber: "WRN", red: "ERR", grey: "N/A" };
 
 export function fmtNumber(n, digits = 1) {
   if (n === null || n === undefined || Number.isNaN(n)) return "--";

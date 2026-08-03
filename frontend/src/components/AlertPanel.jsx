@@ -8,6 +8,7 @@ const kindLabel = {
   safety: "SAFETY",
   composite: "COMPOSITE",
   co: "COMBUSTION",
+  CLUSTER: "CROSS-VALIDATION",
 };
 
 export default function AlertPanel({ alerts = [], compact = false }) {

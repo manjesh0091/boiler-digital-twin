@@ -7,7 +7,9 @@ import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from simulation import simulator, SCENARIOS
+from engine.state_builder import state_builder, SCENARIOS
+# simulation.py (old fake-data engine) is intentionally left in the repo,
+# unimported here, as a reference/fallback -- not deleted.
 
 
 ROOT_DIR = Path(__file__).parent
@@ -16,9 +18,9 @@ load_dotenv(ROOT_DIR / '.env')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await simulator.start()
+    await state_builder.start()
     yield
-    await simulator.stop()
+    await state_builder.stop()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -36,28 +38,28 @@ async def root():
 
 @api_router.get("/state")
 async def get_state():
-    snap = simulator.snapshot()
+    snap = state_builder.snapshot()
     if not snap:
-        raise HTTPException(status_code=503, detail="Simulator warming up")
+        raise HTTPException(status_code=503, detail="State builder warming up")
     return snap
 
 
 @api_router.get("/scenarios")
 async def get_scenarios():
-    return {"scenarios": SCENARIOS, "active": simulator.snapshot().get("scenario", "Normal Operation")}
+    return {"scenarios": SCENARIOS, "active": state_builder.snapshot().get("scenario", "Normal Operation")}
 
 
 @api_router.post("/scenario")
 async def set_scenario(payload: ScenarioIn):
     if payload.scenario not in SCENARIOS:
         raise HTTPException(status_code=400, detail=f"Unknown scenario. Allowed: {SCENARIOS}")
-    await simulator.set_scenario(payload.scenario)
+    await state_builder.set_scenario(payload.scenario)
     return {"ok": True, "scenario": payload.scenario}
 
 
 @api_router.post("/alerts/{alert_id}/ack")
 async def ack_alert(alert_id: str):
-    ok = await simulator.acknowledge(alert_id)
+    ok = await state_builder.acknowledge(alert_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Alert not found")
     return {"ok": True}
@@ -65,7 +67,7 @@ async def ack_alert(alert_id: str):
 
 @api_router.post("/alerts/ack-all")
 async def ack_all():
-    n = await simulator.acknowledge_all()
+    n = await state_builder.acknowledge_all()
     return {"ok": True, "acknowledged": n}
 
 

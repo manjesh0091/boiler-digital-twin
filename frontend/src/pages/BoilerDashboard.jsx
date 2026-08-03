@@ -3,7 +3,9 @@ import { useTelemetryState } from "@/components/Layout";
 import BOIGauge from "@/components/BOIGauge";
 import Sparkline from "@/components/Sparkline";
 import AlertPanel from "@/components/AlertPanel";
-import { STATUS_COLOR, ZONE_LABEL, fmtNumber } from "@/lib/format";
+import CrossValidationPanel from "@/components/CrossValidationPanel";
+import { ZoneChip, DataSourceChip } from "@/components/StatusChips";
+import { STATUS_COLOR, fmtNumber } from "@/lib/format";
 import { S01 } from "@/constants/testIds";
 import {
   BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer, Tooltip,
@@ -17,18 +19,6 @@ const PARAM_GROUPS = {
   Combustion: ["o2", "fegt"],
   "Back-End": ["stack_temp"],
 };
-
-function ZoneChip({ zone }) {
-  const color = STATUS_COLOR[zone] || STATUS_COLOR.green;
-  return (
-    <span
-      className="font-mono text-[10px] px-1.5 py-0.5"
-      style={{ color, border: `1px solid ${color}` }}
-    >
-      {ZONE_LABEL[zone] || "OK"}
-    </span>
-  );
-}
 
 export default function BoilerDashboard() {
   const state = useTelemetryState();
@@ -47,6 +37,7 @@ export default function BoilerDashboard() {
   const waterfall = state?.deviation_waterfall || [];
   const boi = state?.boi || {};
   const safetyIncomplete = state?.safety_data_incomplete;
+  const crossValidation = state?.cross_validation || [];
 
   // Build trend chart data from current group parameters
   const trendData = useMemo(() => {
@@ -152,7 +143,10 @@ export default function BoilerDashboard() {
                   className="param-row border-b border-[#151517]"
                 >
                   <td className="px-3 py-2">
-                    <div className="text-zinc-200">{p.name}</div>
+                    <div className="text-zinc-200 flex items-center gap-1.5">
+                      <span>{p.name}</span>
+                      <DataSourceChip dataSource={p.data_source} />
+                    </div>
                     <div className="text-[10px] text-zinc-600 font-mono">{p.unit}{p.safety ? " · SAFETY" : ""}</div>
                   </td>
                   <td className="px-3 py-2 text-right">
@@ -178,6 +172,14 @@ export default function BoilerDashboard() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* Cross-validation (Cluster 1) — deliberately visually distinct from
+          the BOI/Parameter Grid above: this checks relationships BETWEEN
+          parameters, not one parameter's own deviation, and its status is
+          never folded into BOI or any parameter's sub_score. */}
+      <section className="col-span-9">
+        <CrossValidationPanel items={crossValidation} />
       </section>
 
       {/* Trend charts */}

@@ -29,6 +29,8 @@ export const S01 = {
   ackBtn: (id) => `pai-s01-ack-${id}`,
   summary: "pai-s01-summary",
   safetyIncomplete: "pai-s01-safety-incomplete",
+  crossValidation: "pai-s01-cross-validation",
+  crossValidationRow: (rel) => `pai-s01-cross-validation-row-${rel}`,
 };
 
 export const S03 = {
