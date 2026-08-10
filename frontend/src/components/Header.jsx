@@ -12,7 +12,7 @@ const MODE_COLORS = {
   "Shutdown": STATUS_COLOR.red,
 };
 
-export default function Header({ state }) {
+export default function Header({ state, refetch }) {
   const [scenarios, setScenarios] = useState([]);
   const [pending, setPending] = useState(false);
 
@@ -35,6 +35,13 @@ export default function Header({ state }) {
     setPending(true);
     try {
       await setScenario(e.target.value);
+      // Force an immediate authoritative poll instead of waiting up to 2s
+      // for the next scheduled one -- otherwise a poll already in flight
+      // when this POST landed can resolve afterward with pre-change data
+      // and revert the dropdown right back (real bug this project hit;
+      // useTelemetry's request-ordering guard makes this call safe even if
+      // that in-flight poll resolves later still).
+      if (refetch) await refetch();
     } finally {
       setPending(false);
     }

@@ -1,6 +1,7 @@
 import React from "react";
 import { useTelemetryState } from "@/components/Layout";
 import O2Gauge from "@/components/O2Gauge";
+import { DataSourceChip } from "@/components/StatusChips";
 import { STATUS_COLOR, fmtNumber } from "@/lib/format";
 import { S03 } from "@/constants/testIds";
 import {
@@ -27,6 +28,12 @@ function GuidanceBox({ guidance }) {
       <div className="p-3 text-sm text-zinc-200 leading-relaxed">
         {guidance?.text || "Awaiting data…"}
       </div>
+      {guidance?.references_co && (
+        <div className="px-3 pb-3 -mt-1 flex items-center gap-1.5">
+          <DataSourceChip dataSource="simulated" />
+          <span className="text-[10px] text-zinc-600">CO reading referenced above is simulated, pending sensor confirmation</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -53,7 +60,13 @@ export default function CombustionMonitor() {
   const currentPoint = trail.length ? trail[trail.length - 1] : { x: 0, y: 0 };
 
   const afrPct = c.afr_actual && c.afr_design ? (c.afr_actual / c.afr_design) * 100 : 100;
-  const afrColor = Math.abs(afrPct - 100) < 10 ? STATUS_COLOR.green : Math.abs(afrPct - 100) < 25 ? STATUS_COLOR.amber : STATUS_COLOR.red;
+  // afr_design is still simulated pending coal Ultimate Analysis (Phase B)
+  // -- comparing a real Actual against a placeholder Design shouldn't paint
+  // an alarm-red bar over what might not be a real problem at all.
+  const afrDesignReal = c.data_source?.afr_design === "real";
+  const afrColor = !afrDesignReal
+    ? STATUS_COLOR.grey
+    : Math.abs(afrPct - 100) < 10 ? STATUS_COLOR.green : Math.abs(afrPct - 100) < 25 ? STATUS_COLOR.amber : STATUS_COLOR.red;
 
   return (
     <div data-testid={S03.root} className="grid grid-cols-12 gap-3">
@@ -70,7 +83,13 @@ export default function CombustionMonitor() {
 
       {/* Top row: O2 gauge, EA banner, CO indicator */}
       <section className="col-span-5 panel">
-        <div className="panel-header"><span>O₂ Real-Time</span><span className="text-[10px] font-mono text-zinc-500">Load-corrected target</span></div>
+        <div className="panel-header">
+          <span>O₂ Real-Time</span>
+          <div className="flex items-center gap-2">
+            <DataSourceChip dataSource={c.data_source?.o2_pct} />
+            <span className="text-[10px] font-mono text-zinc-500">Load-corrected target</span>
+          </div>
+        </div>
         <div className="p-3" data-testid={S03.o2Gauge}>
           <O2Gauge value={c.o2_pct || 0} target={c.o2_target || 4} bandLow={c.o2_band_low || 3} bandHigh={c.o2_band_high || 6} max={12} />
         </div>
@@ -78,7 +97,7 @@ export default function CombustionMonitor() {
 
       <section className="col-span-4 grid grid-rows-2 gap-3">
         <div className="panel" data-testid={S03.eaBanner}>
-          <div className="panel-header"><span>Excess Air</span></div>
+          <div className="panel-header"><span>Excess Air</span><DataSourceChip dataSource={c.data_source?.excess_air_pct} /></div>
           <div className="p-4 flex items-baseline gap-3">
             <span className="num-ticker text-5xl font-mono font-semibold text-zinc-100">
               {fmtNumber(c.excess_air_pct, 1)}
@@ -90,7 +109,7 @@ export default function CombustionMonitor() {
           </div>
         </div>
         <div className="panel" data-testid={S03.cssBadge}>
-          <div className="panel-header"><span>Combustion Stability</span></div>
+          <div className="panel-header"><span>Combustion Stability</span><DataSourceChip dataSource={c.data_source?.css} /></div>
           <div className="p-4 flex items-baseline gap-3">
             <span
               className="num-ticker text-4xl font-mono font-semibold"
@@ -105,7 +124,7 @@ export default function CombustionMonitor() {
       </section>
 
       <section className="col-span-3 panel" data-testid={S03.coIndicator} style={{ borderColor: coColor }}>
-        <div className="panel-header"><span>CO Safety</span></div>
+        <div className="panel-header"><span>CO Safety</span><DataSourceChip dataSource={c.data_source?.co_ppm} /></div>
         <div className="p-4">
           <div className="flex items-baseline gap-2">
             <span className="num-ticker text-5xl font-mono font-semibold" style={{ color: coColor }}>
@@ -135,12 +154,15 @@ export default function CombustionMonitor() {
       <section className="col-span-6 panel" data-testid={S03.quadrantPlot}>
         <div className="panel-header">
           <span>CO – O₂ Quadrant</span>
-          <span
-            className="font-mono text-[10px] px-2 py-0.5"
-            style={{ color: qColor, border: `1px solid ${qColor}` }}
-          >
-            {c.quadrant?.label || "—"}
-          </span>
+          <div className="flex items-center gap-2">
+            <DataSourceChip dataSource={c.data_source?.quadrant} />
+            <span
+              className="font-mono text-[10px] px-2 py-0.5"
+              style={{ color: qColor, border: `1px solid ${qColor}` }}
+            >
+              {c.quadrant?.label || "—"}
+            </span>
+          </div>
         </div>
         <div className="p-2 h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -220,7 +242,10 @@ export default function CombustionMonitor() {
               <div className="num-ticker text-3xl font-mono" style={{ color: afrColor }}>{fmtNumber(c.afr_actual, 2)}</div>
             </div>
             <div className="text-right">
-              <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-display">Design</div>
+              <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-display flex items-center gap-1.5 justify-end">
+                <span>Design</span>
+                <DataSourceChip dataSource={c.data_source?.afr_design} />
+              </div>
               <div className="num-ticker text-3xl font-mono text-zinc-400">{fmtNumber(c.afr_design, 2)}</div>
             </div>
           </div>
@@ -241,6 +266,11 @@ export default function CombustionMonitor() {
           <div className="mt-2 text-[10px] font-mono text-zinc-500">
             Ratio to design: {fmtNumber(afrPct, 1)}%
           </div>
+          {!afrDesignReal && (
+            <div className="mt-1 text-[10px] text-zinc-600 italic">
+              Design value simulated (pending coal Ultimate Analysis) — ratio not yet meaningful.
+            </div>
+          )}
         </div>
       </section>
 
@@ -256,7 +286,10 @@ export default function CombustionMonitor() {
             <span className="font-mono text-zinc-200">{fmtNumber(c.efficiency?.dry_gas_loss_delta_pct, 3)} %</span>
           </div>
           <div className="pt-2 border-t border-[#2A2A2E]">
-            <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-display">Avoidable Cost</div>
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-display flex items-center gap-1.5">
+              <span>Avoidable Cost</span>
+              <DataSourceChip dataSource={c.data_source?.["efficiency.avoidable_cost_inr_per_hr"]} />
+            </div>
             <div className="mt-1 flex items-baseline gap-1">
               <span
                 className="num-ticker text-3xl font-mono font-semibold"

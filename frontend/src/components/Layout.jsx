@@ -12,12 +12,12 @@ const MODULE_META = {
 };
 
 export default function ModuleLayout() {
-  const { state, connected, error } = useTelemetry(2000);
+  const { state, connected, error, refetch } = useTelemetry(2000);
   const location = useLocation();
   const meta = MODULE_META[location.pathname] || { id: "", name: "Module" };
 
   return (
-    <TelemetryContext.Provider value={{ state, connected, error }}>
+    <TelemetryContext.Provider value={{ state, connected, error, refetch }}>
       <div className="flex flex-col h-screen bg-[#0B0B0C] text-zinc-100">
         {/* Breadcrumb bar */}
         <div className="h-11 border-b border-[#2A2A2E] px-4 flex items-center justify-between bg-[#0F0F11]">
@@ -39,7 +39,7 @@ export default function ModuleLayout() {
           </div>
         </div>
 
-        <Header state={state} />
+        <Header state={state} refetch={refetch} />
 
         <main className="flex-1 overflow-auto p-3">
           {!state && (

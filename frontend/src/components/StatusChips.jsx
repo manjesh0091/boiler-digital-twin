@@ -18,7 +18,15 @@ export function ZoneChip({ zone }) {
   );
 }
 
-const DATA_SOURCE_LABEL = { unverified: "UNVERIFIED", stale: "STALE" };
+// "real" is intentionally absent -- no chip shown, same convention as
+// Module 1's parameter grid (a trustworthy value gets no badge at all).
+const DATA_SOURCE_LABEL = {
+  unverified: "UNVERIFIED",
+  stale: "STALE",
+  simulated: "SIMULATED",
+  partial: "PARTIAL",
+  derived_estimate: "ESTIMATED",
+};
 
 export function DataSourceChip({ dataSource }) {
   const label = DATA_SOURCE_LABEL[dataSource];

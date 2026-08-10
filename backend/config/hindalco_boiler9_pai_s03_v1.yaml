@@ -1,0 +1,35 @@
+# =============================================================================
+# PAI-S03 — Combustion Excess Air Monitor
+# Tag Mapping Config — Plant: Hindalco Boiler-9 (CFBC, Unit 4)
+# Rev 1 — Phase A (real-data wiring for what's already resolvable)
+# =============================================================================
+# Deliberately minimal: Module 2's combustion object reuses O2, stack_temp
+# and TOTAL_AIR_FLOW already extracted by Module 1's own config
+# (hindalco_boiler9_pai_s01_v2.yaml) via module1_features.csv -- no need to
+# re-extract those here. This file only adds the ONE additional raw tag
+# Module 2 needs that Module 1 doesn't already pull: Fuel Flow, for
+# afr_actual = Total Air Flow / Fuel Flow.
+#
+# CO is intentionally NOT mapped here. The only tag with "CO" in its name in
+# the raw historian, "CO O/L TO ECO-1", is almost certainly a mislabeled
+# flue-gas PRESSURE point, not a CO analyzer reading -- its values are
+# negative (-270.7 to -15.9, mean -220; CO ppm cannot be negative) and
+# correlate 0.997 with "FG I/L PR TO ECO-1" (a known pressure tag) and 0.93
+# with two other flue-gas-path pressure tags. No other CO-ppm candidate tag
+# exists in the raw export. co_ppm therefore stays simulated pending
+# plant-engineer confirmation of a correct CO analyzer tag (or confirmation
+# that none exists on this unit) -- see engine/state_builder.py's combustion
+# docstring and the "data_source" flags on the /state combustion object.
+# =============================================================================
+
+plant_id: hindalco_boiler9
+boiler_type: CFBC
+timestamp_column: "Timestamp"
+
+parameters:
+
+  FUEL_FLOW:
+    status: available
+    raw_tags: ["FUEL FLOW"]
+    aggregation: single
+    unit: TPH

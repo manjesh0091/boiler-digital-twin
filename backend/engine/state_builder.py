@@ -16,18 +16,99 @@ Ties together:
                            dataset at load time (pure function of history,
                            no need to recompute every tick)
 
-Combustion — flagging a deliberate deviation from a literal "leave
-combustion untouched" reading. Building it fully decoupled from real data
-would mean parameters['o2'] (now real historian data) and
-combustion['o2_pct'] (fully fake, independent) show two different O2
-readings on two different dashboard pages for what's supposedly the same
-sensor. That seemed like a worse bug than the scope question, so:
-combustion.o2_pct mirrors the real parameters['o2'].value, and o2_target
-uses the same baseline.expected('o2', load) as the parameter grid.
-Everything downstream of O2 (CO ppm random walk, quadrant classification,
-AFR, CSS, efficiency impact, operator guidance, o2_band_low/high) is the
-OLD simulated logic, UNCHANGED, just fed the real o2/target instead of a
-fake independent walk. Please confirm this is the right call.
+Combustion (PAI-S03) — o2_pct mirrors the real parameters['o2'].value, and
+o2_target uses the same baseline.expected('o2', load) as the parameter
+grid, since Module 1 integration (see git history). Everything downstream
+of O2 (quadrant classification, AFR, CSS, efficiency impact, operator
+guidance) was ALREADY substantially real as a result -- those formulas
+only ever took o2_value/o2_target/stack_temp_value as inputs, and those
+were already real. Phase A (this revision) makes the rest of what's
+resolvable real too:
+
+  - co_ppm: STILL SIMULATED, deliberately, not an oversight. The only raw
+    tag with "CO" in its name, "CO O/L TO ECO-1" (mapped to Module 1's
+    CO_IN_FLUE_GAS), is almost certainly a mislabeled flue-gas PRESSURE
+    point, not a CO analyzer reading: its values are negative (-270.7 to
+    -15.9 ppm-equivalent, mean -220 -- CO concentration cannot be
+    negative) and correlate 0.997 with "FG I/L PR TO ECO-1", a known
+    pressure tag, and 0.93 with two other flue-gas-path pressure tags. No
+    other CO-ppm candidate tag exists anywhere in the raw historian
+    export. Wiring this in as "real" would put fabricated-looking-real
+    data under a P1 safety alarm ("UNDER-FIRED ALARM") -- worse than
+    leaving it simulated and flagged. Pending plant-engineer confirmation
+    of a correct CO analyzer tag (or confirmation none exists on this
+    unit). Everything downstream of CO (quadrant's CO-gated branches,
+    guidance's CO-gated branches, CSS's S_CO term, Alert Priority Matrix
+    P1/P4) is therefore also still simulated/partial -- see the
+    "data_source" map on the /state combustion object for the exact
+    per-field breakdown.
+  - o2_band_low/o2_band_high: NOW REAL (follow-up, same phase -- needed no
+    blocking input) -- mean +/- std from engine/baseline.py's existing
+    STEADY-trained, load-binned O2 baseline (the SAME one o2's own z-score
+    scoring already uses), replacing a hardcoded 5-row rule table inherited
+    from the original simulator. The real bands are noticeably tighter
+    (e.g. width ~1.0 pct-pt at 90-100% load vs. the old table's flat 3.0)
+    and sit at different absolute levels -- the old table was a reasonable
+    generic guess, not this plant's actual O2 control tightness. P3's
+    "outside band" alert condition inherits this improvement automatically.
+  - afr_actual: NOW REAL -- Total Air Flow (TOTAL_AIR_FLOW, already
+    derived by Module 1) / Fuel Flow (new: config/hindalco_boiler9_pai_s03_v1.yaml,
+    raw tag "FUEL FLOW"), replacing the old formula-off-O2 simulation.
+  - afr_design: still simulated (same old formula) -- needs Carbon% and
+    Hydrogen% from the coal's Ultimate Analysis, not yet available (O%,
+    N%, S% are, C and H aren't). Recomputed on the Layer-3 (per-shift)
+    cadence hook below so swapping in real Ultimate-Analysis-based logic
+    in a later phase doesn't require restructuring, even though the
+    formula itself hasn't changed yet.
+  - efficiency.excess_o2_pct / dry_gas_loss_delta_pct: real (always were,
+    incidentally -- pure functions of already-real o2/target/stack_temp).
+    efficiency.avoidable_cost_inr_per_hr: still simulated -- needs a real
+    coal cost (Rs/tonne); COAL_COST_INR_PER_KG stays a placeholder
+    constant.
+  - quadrant classification: rule thresholds already exactly matched this
+    phase's spec (Q1/Q2/Q3/Q4 bands, CO>500 override) with no code change
+    needed -- still gated on simulated CO, so still simulated overall.
+  - guidance: still "partial" -- 3 of 5 branches are O2-only (already
+    real), 2 are CO-gated (still simulated).
+  - css: still "partial" -- S_O2 sub-term real, S_CO and S_Q sub-terms
+    simulated (CO-gated). S_AFR term is a Phase-B placeholder (needs
+    afr_design, see above).
+
+Calculation cadence (3-layer model, PAI-S03 Dashboard_Method spec):
+  - Layer 1 (every tick, ~2s replay cadence): O2, CO, quadrant, alert
+    evaluation -- no separate throttle, this is just the tick loop.
+  - Layer 2 (every LAYER2_INTERVAL_SECONDS = 5 real minutes): css and
+    efficiency are recomputed only on this cadence and held steady
+    in between, via self._layer2_cache + self._layer2_last_mono --
+    matches the spec and avoids visible flicker on these two composite
+    scores.
+  - Layer 3 (every LAYER3_INTERVAL_SECONDS = 8h shift): afr_design
+    recompute hook, via self._afr_design_cache + self._layer3_last_mono.
+    Formula unchanged for now (see afr_design above) -- only the CADENCE
+    is new, so Phase B can drop in real Ultimate-Analysis logic without
+    restructuring.
+
+Alert Priority Matrix (replaces the old single co_ppm>500 "co::critical"
+alert with 5 priorities; see P1_*/P2_*/P3_*/P4_* constants above and
+_evaluate_combustion_alerts()):
+  - P1 (red, immediate): O2 < 2.0% AND CO > 500 ppm.
+  - P2 (red, action): O2 > target + 2.5 percentage points, sustained
+    >= 10 min. O2-only -- real.
+  - P3 (amber): O2 outside its normal band, sustained >= 5 min. O2-only
+    -- real.
+  - P4 (amber): CO > 300 ppm, sustained >= 3 min. CO-gated -- simulated.
+  - P5 (info): soot blowing / mill change -> mode-only, no alert. This
+    unit has no soot blower (has_soot_blower: false, v2 config) and is a
+    CFBC design (no pulverizer mills), so P5 has no real trigger
+    condition here -- the hook exists but is structurally inert on this
+    plant, which is expected, not a bug.
+  Combustion alerts (kind="COMBUSTION") get a NEW behavior Module 1's
+  existing alerts don't have: a 30-minute ack-snooze
+  (COMBUSTION_ACK_SNOOZE_SECONDS) -- an acknowledged combustion alert goes
+  quiet, then automatically re-arms (acknowledged reset to False) if it's
+  still active 30 minutes later. Module 1's param/safety/composite/CLUSTER
+  alerts are UNCHANGED -- they still ack permanently until the underlying
+  condition clears, no snooze.
 
 Scenario injection — also flagged rather than silently dropped. The old
 SCENARIOS list biased whatever was simulated; now that parameters/BOI/
@@ -80,11 +161,12 @@ from engine.scoring import (
 )
 from shared.chronological_split import chronological_split
 from shared.data_quality import STALE_STREAK_ROWS
-from shared.feature_extraction import load_config
+from shared.feature_extraction import build_feature_view, load_config
 from shared.raw_loader import load_raw
 
 DATA_PATH = Path(__file__).parent.parent / "data" / "processed" / "module1_features.csv"
 CLUSTER_CONFIG_PATH = Path(__file__).parent.parent / "clusters" / "cluster_config.yaml"
+S03_CONFIG_PATH = Path(__file__).parent.parent / "config" / "hindalco_boiler9_pai_s03_v1.yaml"
 
 # Relationship metadata for the /state "cross_validation" field and CLUSTER
 # alerts -- display name + human-readable member list, keyed by the same
@@ -106,6 +188,7 @@ SCENARIOS = [
     "Normal Operation",
     "Excess Air Event",
     "Under-Air / CO Risk Event",
+    "Severe Under-Air / CO Critical Event",
     "Drum Level Excursion",
     "Soot Blowing Period",
     "Sensor Data Quality Drop",
@@ -114,7 +197,30 @@ SCENARIOS = [
 SCENARIO_NOTES: dict[str, str | None] = {
     "Normal Operation": None,
     "Excess Air Event": None,
-    "Under-Air / CO Risk Event": None,
+    "Under-Air / CO Risk Event": (
+        "Biases combustion.o2_pct down (O2_UNDER_AIR_SCENARIO_BIAS_PCT) in "
+        "addition to the existing CO boost, so this scenario exercises both "
+        "halves of its own name -- LOW O2 + elevated CO, not CO alone. "
+        "Applies ONLY to the combustion view (o2_pct here will diverge from "
+        "the real parameters['o2'].value shown on the Parameter Grid while "
+        "this scenario is active) -- flagged via data_source.o2_pct "
+        "switching to 'simulated' for the duration, same as every other "
+        "scenario-injected value in this module."
+    ),
+    "Severe Under-Air / CO Critical Event": (
+        "Distinct from 'Under-Air / CO Risk Event' -- that scenario is "
+        "deliberately capped to land CO in (300,500] (see "
+        "UNDER_AIR_SCENARIO_CO_TERM_CAP's comment), which means it can "
+        "never reach P1 (O2 < 2.0% AND CO > 500 ppm), the single most "
+        "severe entry in the Alert Priority Matrix. This scenario exists "
+        "specifically to make P1 reachable/demonstrable: O2 is clamped to "
+        "<= SEVERE_UNDER_AIR_O2_CAP_PCT and CO is driven to "
+        "~SEVERE_UNDER_AIR_CO_TARGET_PPM, both deterministically (not just "
+        "biased), so P1 fires reliably rather than depending on real data "
+        "coincidence (real O2 < 2.0% happens in only 0.034% of this "
+        "dataset's rows). Same o2_pct/excess_air_pct 'simulated' flagging "
+        "as the milder scenario applies here too."
+    ),
     "Drum Level Excursion": (
         "No effect against real replayed data: drum_level is now a real "
         "(needs_verification) historian reading, not a simulated value -- "
@@ -145,9 +251,70 @@ SENSOR_DROP_KEYS = {"stack_temp", "fegt", "feedwater_flow"}
 # not a second definition that could drift.
 
 AMBIENT_TEMP = 30.0
-GCV = 4000.0
-COAL_COST_INR_PER_KG = 6.5
+GCV = 3610.0  # real plant value (config/hindalco_boiler9_pai_s01_v2.yaml: COAL_GCV static_config,
+              # proximate-analysis basis) -- was an arbitrary 4000.0 placeholder before this fix
+COAL_COST_INR_PER_KG = 6.5  # still a placeholder -- no real coal-cost input yet, see module docstring
 STEAM_TO_COAL = 6.5
+
+# ---- PAI-S03 combustion: calculation cadence (3-layer model per the
+# PAI-S03 Dashboard_Method spec) ----
+# Layer 1 (O2, CO, quadrant, alert evaluation) runs every tick -- no
+# separate constant needed, it's just "the tick loop."
+LAYER2_INTERVAL_SECONDS = 300.0     # 5 real minutes: CSS, DGL efficiency
+LAYER3_INTERVAL_SECONDS = 8 * 3600.0  # 8-hour shift: AFR/theoretical-air design recompute
+
+# ---- PAI-S03 combustion: Alert Priority Matrix thresholds ----
+# P2/P3/P4 require the condition to hold continuously for a minimum
+# duration before firing (not an instant blip) -- tracked the same way
+# below_threshold_since already tracks "how long has this been quiet."
+P1_O2_PCT_MAX = 2.0          # O2 < this AND CO > P1_CO_PPM_MIN -> immediate
+P1_CO_PPM_MIN = 500.0
+P2_O2_DEV_PCT_ABOVE = 2.5    # O2 > target + this, sustained...
+P2_SUSTAINED_SECONDS = 600.0  # ...for >= 10 min
+P3_SUSTAINED_SECONDS = 300.0  # O2 outside its normal band for >= 5 min
+P4_CO_PPM_MIN = 300.0        # CO > this, sustained...
+P4_SUSTAINED_SECONDS = 180.0  # ...for >= 3 min
+COMBUSTION_ACK_SNOOZE_SECONDS = 1800.0  # 30 min -- combustion alerts only
+
+# "Under-Air / CO Risk Event" scenario: O2 bias. Correctness fix, not just a
+# demo convenience -- the scenario's own NAME promises both an under-air
+# (low O2) condition and elevated CO, but until this constant existed it
+# only ever did the CO half (base_co += 350.0 below). Fixed magnitude, same
+# pattern as that existing CO bias (a flat constant, not extra randomness)
+# -- applied only to combustion's own o2_value (see _tick()), never to
+# Module 1's parameters['o2'].value (the Parameter Grid), which must stay
+# real/unbiased regardless of which combustion scenario is selected.
+O2_UNDER_AIR_SCENARIO_BIAS_PCT = -1.2
+
+# Same scenario, CO side. The general o2_dev-linked CO escalation term
+# (base_co += (abs(o2_dev)**2.2)*180, see _tick() below -- pre-existing,
+# used by every tick regardless of scenario) is steep enough that combining
+# it uncapped with this scenario's own CO boost overshoots CO_CRITICAL
+# (>500ppm) far more often than it lands in the "elevated, not yet
+# critical" (300,500] window the LOW-O2+CO guidance branch needs to be
+# reachable at all. Verified empirically against the full real O2
+# distribution: the original flat +350 (uncapped term) landed in (300,500]
+# only ~20-37% of the time depending on tuning, vs. ~32-77% overshooting
+# straight to CO_CRITICAL -- never a clean majority either way. Capping the
+# term's contribution + a recalibrated flat boost, SCOPED ONLY to this one
+# scenario (every other scenario and Normal Operation keep the term
+# uncapped, see _tick()), reliably centers CO in the intended window across
+# the ENTIRE real O2 distribution: 100% in-window, 0% quiet, 0% overshoot.
+UNDER_AIR_SCENARIO_CO_TERM_CAP = 120.0
+UNDER_AIR_SCENARIO_CO_FLAT_BOOST = 250.0
+
+# "Severe Under-Air / CO Critical Event" -- a DISTINCT, more extreme
+# scenario whose entire purpose is making P1 (O2 < P1_O2_PCT_MAX AND
+# CO > P1_CO_PPM_MIN, the single most severe alert in the matrix) reliably
+# reachable, since the milder scenario above is deliberately capped away
+# from ever reaching it. Both O2 and CO are driven DETERMINISTICALLY here
+# (a hard cap / fixed target + small noise), not just biased like the
+# milder scenario -- P1 being untestable is worse than this one being
+# slightly less "naturalistic," so reliability was prioritized over subtlety.
+SEVERE_UNDER_AIR_O2_CAP_PCT = 1.7      # o2_value = min(this, real_o2 + bias) -- comfortably under P1_O2_PCT_MAX (2.0)
+SEVERE_UNDER_AIR_O2_BIAS_PCT = -2.5
+SEVERE_UNDER_AIR_CO_TARGET_PPM = 620.0  # base_co = this +/- noise -- comfortably over P1_CO_PPM_MIN (500)
+SEVERE_UNDER_AIR_CO_NOISE_PPM = 20.0
 
 
 def _now_iso() -> str:
@@ -204,18 +371,12 @@ def _cluster_note(rel_key: str, status: str, detail: dict[str, Any]) -> str:
 
 
 # ---- combustion helpers: unchanged from the old simulator (simulation.py) ----
-
-def _o2_band(load_frac: float) -> tuple[float, float]:
-    if load_frac >= 0.80:
-        return (2.5, 5.5)
-    if load_frac >= 0.60:
-        return (3.0, 6.0)
-    if load_frac >= 0.40:
-        return (3.5, 6.5)
-    if load_frac >= 0.25:
-        return (4.0, 8.0)
-    return (5.0, 10.0)
-
+# NOTE: the old hardcoded _o2_band(load_frac) rule table that used to live
+# here is GONE -- o2_band_low/high are now real (see _tick(): computed as
+# self._baseline.stats_for('o2', load_pct).mean +/- std, the exact same
+# STEADY-trained, load-binned baseline engine/baseline.py already fits for
+# o2's own z-score scoring elsewhere in this same tick). No blocking input
+# was needed for this one -- Module 1's baseline already covers 'o2'.
 
 def _excess_air(o2: float) -> float:
     denom = 21.0 - o2
@@ -241,24 +402,83 @@ def _efficiency_impact(o2: float, target: float, stack_temp: float, load_mw: flo
     dgl_delta = 0.028 * excess * max(0.0, stack_temp - AMBIENT_TEMP) / (GCV / 1000.0)
     steam_tph = load_mw * 2.0
     coal_kg_hr = steam_tph * 1000.0 / STEAM_TO_COAL
-    avoidable_cost = coal_kg_hr * (dgl_delta / 100.0) * COAL_COST_INR_PER_KG
+    avoidable_heat_kcal_hr = coal_kg_hr * (dgl_delta / 100.0) * GCV  # real -- feeds guidance's "B kCal/hr" (see below)
+    avoidable_cost = coal_kg_hr * (dgl_delta / 100.0) * COAL_COST_INR_PER_KG  # simulated -- placeholder coal cost
     return {
         "excess_o2_pct": round(excess, 2),
         "dry_gas_loss_delta_pct": round(dgl_delta, 3),
+        "avoidable_heat_kcal_hr": round(avoidable_heat_kcal_hr, 0),
         "avoidable_cost_inr_per_hr": round(avoidable_cost, 0),
     }
 
 
-def _operator_guidance(o2: float, target: float, co: float) -> dict[str, str]:
+# Operator guidance templates -- verbatim from the PAI-S03 Dashboard_Method
+# spec sheet (HIGH O2 / LOW O2 advisories), swapped in to replace this
+# project's own earlier wording for those two specific branches. The other
+# three branches (CO-only critical, mild under-air warning, in-band OK)
+# have no spec-provided template and keep their original wording.
+#
+# Per-value provenance within each template (the message TEXT is verbatim;
+# this comment is where the real/simulated distinction actually lives,
+# since these two templates mix both within one sentence):
+#   HIGH O2: X (O2), Y (target), Z (excess air %) -- all REAL. A (FD damper
+#     reduction %) is a DERIVED ESTIMATE, not a calibrated damper-position
+#     curve (none exists in this data) -- approximated as the excess-air
+#     percentage-point delta between current and target O2, which is the
+#     standard first-order proxy; still built entirely from real O2/target,
+#     so treated as real-but-approximate. B (kCal/hr) is real (real
+#     o2/target/stack_temp/load, plus the plant's actual confirmed GCV
+#     static config, not a placeholder). C (Rs/hr) is SIMULATED --
+#     COAL_COST_INR_PER_KG is still a placeholder pending a real coal-cost
+#     input (Phase B).
+#   LOW O2: X (O2), Y (target) are REAL. D (CO reading) is SIMULATED --
+#     same CO_IN_FLUE_GAS tag-mislabeling issue as everywhere else CO
+#     appears in this module (see module docstring); this line's CO number
+#     inherits that flag even though the O2 portion of the same message is
+#     real.
+def _operator_guidance(o2: float, target: float, co: float, efficiency: dict[str, Any]) -> dict[str, Any]:
+    """Returns {"level", "text", "references_co"}. references_co is True
+    only for the two branches that display/depend on an actual CO ppm
+    VALUE (both currently simulated, see module docstring) -- NOT for the
+    mild under-air branch below, which just says "monitor CO closely" as a
+    generic instruction without citing a CO number. The frontend uses this
+    flag to show a caveat exactly when it's warranted, instead of either
+    string-matching the message text (fragile) or flagging every guidance
+    message regardless of which branch is active (cries wolf on the 3
+    branches that are already fully real).
+    """
     if co > 500:
-        return {"level": "critical", "text": f"CO at {co:.0f} ppm — verify air supply, do NOT reduce further until CO confirmed safe."}
+        return {"level": "critical", "text": f"CO at {co:.0f} ppm — verify air supply, do NOT reduce further until CO confirmed safe.", "references_co": True}
     if o2 < target - 1.0 and co > 300:
-        return {"level": "critical", "text": f"O₂ at {o2:.1f}% (target {target:.1f}%), CO at {co:.0f} ppm — increase FD damper cautiously."}
+        # LOW O2 advisory (verbatim) -- O2/target real, CO reading simulated (see docstring above).
+        return {
+            "level": "critical",
+            "text": (
+                f"O2 at {o2:.1f}% (target {target:.1f}%). CO reading at {co:.0f} ppm. "
+                "Verify FD/PA air supply. Do NOT reduce further until CO confirmed safe."
+            ),
+            "references_co": True,
+        }
     if o2 > target + 2.0:
-        return {"level": "warning", "text": f"O₂ at {o2:.1f}% (target {target:.1f}%). Consider reducing FD damper position to cut dry gas loss."}
+        # HIGH O2 advisory (verbatim, both lines) -- O2/target/excess-air/kCal
+        # real, FD-damper-% a real-but-approximate proxy, Rs/hr simulated
+        # (see docstring above).
+        excess_air_pct = _excess_air(o2)
+        damper_reduction_pct = max(0.0, excess_air_pct - _excess_air(target))
+        heat_kcal_hr = efficiency.get("avoidable_heat_kcal_hr", 0.0)
+        cost_inr_hr = efficiency.get("avoidable_cost_inr_per_hr", 0.0)
+        return {
+            "level": "warning",
+            "text": (
+                f"O2 at {o2:.1f}% (target {target:.1f}%). Excess air at {excess_air_pct:.1f}%. "
+                f"Consider reducing FD damper position by {damper_reduction_pct:.1f}%. "
+                f"Estimated saving: {heat_kcal_hr:.0f} kCal/hr = ₹{cost_inr_hr:.0f}/hr at current coal cost."
+            ),
+            "references_co": False,
+        }
     if o2 < target - 0.5:
-        return {"level": "warning", "text": f"O₂ at {o2:.1f}% (target {target:.1f}%). Trending under-air — monitor CO closely."}
-    return {"level": "ok", "text": f"O₂ at {o2:.1f}% within target band ({target:.1f}%). Combustion trim optimal."}
+        return {"level": "warning", "text": f"O₂ at {o2:.1f}% (target {target:.1f}%). Trending under-air — monitor CO closely.", "references_co": False}
+    return {"level": "ok", "text": f"O₂ at {o2:.1f}% within target band ({target:.1f}%). Combustion trim optimal.", "references_co": False}
 
 
 @dataclass
@@ -280,7 +500,7 @@ class Alert:
     parameter_key: str
     parameter_name: str
     severity: str          # "amber" | "red"
-    kind: str              # "param" | "composite" | "safety" | "co" | "CLUSTER"
+    kind: str              # "param" | "composite" | "safety" | "co" | "CLUSTER" | "COMBUSTION"
     message: str
     first_ts: str
     last_update_ts: str
@@ -288,6 +508,8 @@ class Alert:
     acknowledged: bool = False
     cleared_ts: str | None = None
     below_threshold_since: float | None = None  # monotonic seconds
+    priority: str | None = None       # "P1".."P5" -- COMBUSTION alerts only, else None
+    acknowledged_mono: float | None = None  # monotonic ack time -- COMBUSTION ack-snooze only
 
 
 class RealDataStateBuilder:
@@ -347,6 +569,22 @@ class RealDataStateBuilder:
                 "splitting module1_features.csv and Cluster 1's feature view."
             )
 
+        # PAI-S03 (combustion): same test-window split again, applied to the
+        # one additional tag Module 1 doesn't already extract (Fuel Flow) --
+        # reuses the SAME raw_df already loaded above, no extra CSV read.
+        s03_config = load_config(S03_CONFIG_PATH)
+        s03_view_full = build_feature_view(raw_df, s03_config).sort_values("Timestamp").reset_index(drop=True)
+        _s03_train, s03_test_view, _s03_split_info = chronological_split(s03_view_full, "Timestamp", TRAIN_FRAC)
+        self._s03_view = s03_test_view
+
+        if len(self._s03_view) != self._n_rows or not (
+            self._df["Timestamp"].reset_index(drop=True) == self._s03_view["Timestamp"].reset_index(drop=True)
+        ).all():
+            raise RuntimeError(
+                "Module 1 and PAI-S03 replay windows are misaligned -- "
+                "expected identical timestamp sequences."
+            )
+
         self._param_runtime: dict[str, ParamRuntimeState] = {k: ParamRuntimeState(k) for k in CSV_COLUMN}
         self._boi_history: Deque[dict[str, float]] = deque(maxlen=HISTORY_LEN)
         self._alerts: dict[str, Alert] = {}
@@ -357,10 +595,28 @@ class RealDataStateBuilder:
 
         self._scenario = "Normal Operation"
 
-        # combustion subsystem's own bit of state -- simulated, see module docstring
+        # combustion subsystem's own bit of state -- co_ppm simulated, see module docstring
         self._co_ppm = 80.0
         self._co_history: Deque[float] = deque(maxlen=HISTORY_LEN)
         self._quadrant_trail: Deque[dict[str, float]] = deque(maxlen=25)
+
+        # Layer 2 (5-min) cadence cache: css + efficiency held steady between
+        # recomputes. Seeded None so the very first tick always computes.
+        self._layer2_last_mono: float | None = None
+        self._layer2_cache: dict[str, Any] = {"css": 0.0, "efficiency": None}
+
+        # Layer 3 (per-shift) cadence cache: afr_design. Formula unchanged
+        # (still simulated) -- only the recompute CADENCE is new, see docstring.
+        self._layer3_last_mono: float | None = None
+        self._afr_design_cache: float = 0.0
+
+        # Alert Priority Matrix P2/P3/P4 sustained-duration trackers --
+        # monotonic timestamp of when each condition FIRST became true,
+        # reset to None the instant it's no longer true (mirrors
+        # below_threshold_since's pattern, just inverted).
+        self._p2_condition_since: float | None = None  # O2 > target+2.5, sustained
+        self._p3_condition_since: float | None = None  # O2 outside band, sustained
+        self._p4_condition_since: float | None = None  # CO > 300, sustained
 
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -399,6 +655,7 @@ class RealDataStateBuilder:
             if not a:
                 return False
             a.acknowledged = True
+            a.acknowledged_mono = time.monotonic()  # only consulted for kind=="COMBUSTION" (ack-snooze)
             return True
 
     async def acknowledge_all(self) -> int:
@@ -407,6 +664,7 @@ class RealDataStateBuilder:
             for a in self._alerts.values():
                 if a.active and not a.acknowledged:
                     a.acknowledged = True
+                    a.acknowledged_mono = time.monotonic()
                     n += 1
             return n
 
@@ -415,6 +673,7 @@ class RealDataStateBuilder:
         now_mono = time.monotonic()
         row = self._df.iloc[self._row_idx]
         cluster_row = self._cluster_view.iloc[self._row_idx]
+        fuel_row = self._s03_view.iloc[self._row_idx]
         row_mode: str = self._modes.iloc[self._row_idx]
         source_ts = row["Timestamp"]
 
@@ -525,16 +784,48 @@ class RealDataStateBuilder:
         o2_result = next(r for r in results if r.key == "o2")
         o2_value = o2_result.value if o2_result.valid else o2_result.expected
         o2_target = o2_result.expected
-        o2_band_low, o2_band_high = _o2_band(load_frac)
+        # Scenario correctness fix: "Under-Air / CO Risk Event" now biases
+        # O2 down too, not just CO (see O2_UNDER_AIR_SCENARIO_BIAS_PCT's own
+        # comment for why). Applied here, before o2_dev/quadrant/guidance/
+        # alerts are computed, so everything downstream in this tick sees
+        # ONE consistent (biased) O2 -- never Module 1's real
+        # parameters['o2'].value, which is untouched by any scenario here.
+        o2_pct_source = "real"
+        if active_scenario == "Under-Air / CO Risk Event":
+            o2_value = o2_value + O2_UNDER_AIR_SCENARIO_BIAS_PCT
+            o2_pct_source = "simulated"
+        elif active_scenario == "Severe Under-Air / CO Critical Event":
+            # Deterministic cap, not just a bias -- see this scenario's
+            # constants' comment for why P1 needs a reliable trigger.
+            o2_value = min(SEVERE_UNDER_AIR_O2_CAP_PCT, o2_value + SEVERE_UNDER_AIR_O2_BIAS_PCT)
+            o2_pct_source = "simulated"
+        # Real band (Phase A follow-up): same STEADY-trained, load-binned
+        # baseline already used for o2's own z-score scoring above -- mean
+        # +/- std at this row's real load, not a hardcoded rule table.
+        o2_band_stats = self._baseline.stats_for("o2", load_pct)
+        o2_band_low = o2_band_stats.mean - o2_band_stats.std
+        o2_band_high = o2_band_stats.mean + o2_band_stats.std
         o2_dev = o2_value - o2_target
 
         base_co = 60.0 + random.uniform(-15, 25)
-        if o2_dev < -0.5:
-            base_co += (abs(o2_dev) ** 2.2) * 180.0
         if active_scenario == "Under-Air / CO Risk Event":
-            base_co += 350.0
-        if active_scenario == "Excess Air Event":
-            base_co = max(20.0, base_co - 30.0)
+            # Capped term + recalibrated boost, this scenario only -- see
+            # UNDER_AIR_SCENARIO_CO_TERM_CAP's comment for why (the general,
+            # uncapped term below overshoots CO_CRITICAL almost always once
+            # combined with this scenario's own O2 bias).
+            if o2_dev < -0.5:
+                base_co += min(UNDER_AIR_SCENARIO_CO_TERM_CAP, (abs(o2_dev) ** 2.2) * 180.0)
+            base_co += UNDER_AIR_SCENARIO_CO_FLAT_BOOST
+        elif active_scenario == "Severe Under-Air / CO Critical Event":
+            # Deterministic target, not the shared o2_dev-linked term at all
+            # -- this scenario's whole job is reliably clearing P1's CO
+            # threshold, not modeling a naturalistic CO response.
+            base_co = SEVERE_UNDER_AIR_CO_TARGET_PPM + random.uniform(-SEVERE_UNDER_AIR_CO_NOISE_PPM, SEVERE_UNDER_AIR_CO_NOISE_PPM)
+        else:
+            if o2_dev < -0.5:
+                base_co += (abs(o2_dev) ** 2.2) * 180.0
+            if active_scenario == "Excess Air Event":
+                base_co = max(20.0, base_co - 30.0)
         self._co_ppm = max(0.0, self._co_ppm * 0.5 + base_co * 0.5)
         self._co_history.append(round(self._co_ppm, 1))
 
@@ -555,13 +846,116 @@ class RealDataStateBuilder:
         stack_result = next(r for r in results if r.key == "stack_temp")
         stack_temp_value = stack_result.value if stack_result.valid else stack_result.expected
 
-        if self._co_ppm > 500:
+        # ---- afr_actual: REAL now (Phase A) -- Total Air Flow / Fuel Flow,
+        # both real/derived. Falls back to the old simulated formula only if
+        # a row's real inputs are missing (rare -- both tags are dense).
+        total_air_flow_raw = row.get("TOTAL_AIR_FLOW")
+        total_air_flow_value = None if pd.isna(total_air_flow_raw) else float(total_air_flow_raw)
+        fuel_flow_raw = fuel_row.get("FUEL_FLOW")
+        fuel_flow_value = None if pd.isna(fuel_flow_raw) else float(fuel_flow_raw)
+        if total_air_flow_value is not None and fuel_flow_value is not None and fuel_flow_value > 0:
+            afr_actual_value = total_air_flow_value / fuel_flow_value
+            afr_actual_source = "real"
+        else:
+            afr_actual_value = _afr(o2_value)
+            afr_actual_source = "simulated"
+
+        # ---- Layer 2 (5-min) cadence: css + efficiency held steady between
+        # recomputes, per the PAI-S03 Dashboard_Method spec (see docstring). ----
+        if self._layer2_last_mono is None or (now_mono - self._layer2_last_mono) >= LAYER2_INTERVAL_SECONDS:
+            self._layer2_cache["css"] = _css(o2_value, o2_target, self._co_ppm, quadrant)
+            self._layer2_cache["efficiency"] = _efficiency_impact(o2_value, o2_target, stack_temp_value, load_mw)
+            self._layer2_last_mono = now_mono
+        css_value = self._layer2_cache["css"]
+        efficiency_value = self._layer2_cache["efficiency"]
+
+        # ---- Layer 3 (per-shift) cadence hook: afr_design. Formula is
+        # STILL the old simulated one (needs Carbon%/Hydrogen% from Ultimate
+        # Analysis, not yet available) -- only the recompute cadence is new,
+        # so Phase B can drop in real logic here without restructuring. ----
+        if self._layer3_last_mono is None or (now_mono - self._layer3_last_mono) >= LAYER3_INTERVAL_SECONDS:
+            self._afr_design_cache = _afr(o2_target)
+            self._layer3_last_mono = now_mono
+        afr_design_value = self._afr_design_cache
+
+        # ---- Alert Priority Matrix (P1-P5) -- replaces the old single
+        # co_ppm>500 "co::critical" alert. P2/P3 are real (O2-only); P1/P4
+        # are CO-gated, still simulated (see module docstring). Dedup via
+        # the same _fire_or_update_alert/_mark_below_threshold pattern
+        # Module 1 already uses; combustion alerts additionally get a
+        # 30-min ack-snooze (_check_combustion_ack_snooze below), which
+        # Module 1's other alert kinds don't have. ----
+        p1_condition = o2_value < P1_O2_PCT_MAX and self._co_ppm > P1_CO_PPM_MIN
+        if p1_condition:
             self._fire_or_update_alert(
-                "co::critical", "co", "CO Emissions", "red", "co",
-                f"CO at {self._co_ppm:.0f} ppm — combustion safety hazard", now_mono,
+                "combustion::p1", "combustion_p1", "Combustion P1", "red", "COMBUSTION",
+                f"P1 UNDER-FIRED ALARM — INCREASE AIR IMMEDIATELY (O2 {o2_value:.1f}%, CO {self._co_ppm:.0f} ppm)",
+                now_mono, priority="P1",
             )
         else:
-            self._mark_below_threshold("co::critical", now_mono)
+            self._mark_below_threshold("combustion::p1", now_mono)
+
+        p2_condition_now = o2_value > (o2_target + P2_O2_DEV_PCT_ABOVE)
+        if p2_condition_now:
+            if self._p2_condition_since is None:
+                self._p2_condition_since = now_mono
+        else:
+            self._p2_condition_since = None
+        p2_sustained = p2_condition_now and self._p2_condition_since is not None and (
+            now_mono - self._p2_condition_since
+        ) >= P2_SUSTAINED_SECONDS
+        if p2_sustained:
+            self._fire_or_update_alert(
+                "combustion::p2", "combustion_p2", "Combustion P2", "red", "COMBUSTION",
+                f"P2 EXCESS AIR ACTION — O2 {o2_value:.1f}% ({o2_value - o2_target:+.1f} pts above target) sustained >=10 min",
+                now_mono, priority="P2",
+            )
+        else:
+            self._mark_below_threshold("combustion::p2", now_mono)
+
+        p3_condition_now = not (o2_band_low <= o2_value <= o2_band_high)
+        if p3_condition_now:
+            if self._p3_condition_since is None:
+                self._p3_condition_since = now_mono
+        else:
+            self._p3_condition_since = None
+        p3_sustained = p3_condition_now and self._p3_condition_since is not None and (
+            now_mono - self._p3_condition_since
+        ) >= P3_SUSTAINED_SECONDS
+        if p3_sustained:
+            self._fire_or_update_alert(
+                "combustion::p3", "combustion_p3", "Combustion P3", "amber", "COMBUSTION",
+                f"P3 O2 DEVIATION — INVESTIGATE — O2 {o2_value:.1f}% outside band [{o2_band_low:.1f}, {o2_band_high:.1f}] sustained >=5 min",
+                now_mono, priority="P3",
+            )
+        else:
+            self._mark_below_threshold("combustion::p3", now_mono)
+
+        p4_condition_now = self._co_ppm > P4_CO_PPM_MIN
+        if p4_condition_now:
+            if self._p4_condition_since is None:
+                self._p4_condition_since = now_mono
+        else:
+            self._p4_condition_since = None
+        p4_sustained = p4_condition_now and self._p4_condition_since is not None and (
+            now_mono - self._p4_condition_since
+        ) >= P4_SUSTAINED_SECONDS
+        if p4_sustained:
+            self._fire_or_update_alert(
+                "combustion::p4", "combustion_p4", "Combustion P4", "amber", "COMBUSTION",
+                f"P4 CO ELEVATED — CHECK COMBUSTION — CO {self._co_ppm:.0f} ppm sustained >=3 min",
+                now_mono, priority="P4",
+            )
+        else:
+            self._mark_below_threshold("combustion::p4", now_mono)
+
+        # P5 (soot blowing / mill change): mode-only, no alert -- this unit
+        # has no soot blower and is a CFBC design (no pulverizer mills), so
+        # there's no real trigger condition here. Hook kept for other
+        # plants/units where it would apply -- structurally inert here by
+        # design, not an oversight (see module docstring).
+
+        self._check_combustion_ack_snooze(now_mono)
 
         # ---- Cluster 1 cross-parameter validation -- a SEPARATE signal
         # from the BOI/parameter scoring above: it checks relationships
@@ -639,11 +1033,57 @@ class RealDataStateBuilder:
                 "co_history": list(self._co_history),
                 "quadrant": quadrant,
                 "quadrant_trail": list(self._quadrant_trail),
-                "afr_actual": round(_afr(o2_value), 2),
-                "afr_design": round(_afr(o2_target), 2),
-                "css": round(_css(o2_value, o2_target, self._co_ppm, quadrant), 1),
-                "efficiency": _efficiency_impact(o2_value, o2_target, stack_temp_value, load_mw),
-                "guidance": _operator_guidance(o2_value, o2_target, self._co_ppm),
+                "afr_actual": round(afr_actual_value, 2),
+                "afr_design": round(afr_design_value, 2),
+                "css": round(css_value, 1),
+                "efficiency": efficiency_value,
+                "guidance": _operator_guidance(o2_value, o2_target, self._co_ppm, efficiency_value),
+                # Vocabulary (same spirit as scoring.DataSource -- never let a
+                # value's provenance be inferable only from a code comment):
+                #   real             -- a real tag, or a pure function of only
+                #                       real tags/real learned baselines.
+                #   simulated        -- fabricated/placeholder; no real input
+                #                       feeds it at all.
+                #   derived_estimate -- computed FROM real inputs, but via an
+                #                       approximate/uncalibrated proxy formula
+                #                       (not a measured or plant-validated
+                #                       value) -- e.g. fd_damper_reduction_pct
+                #                       below, which stands in for a real
+                #                       damper-position curve this dataset
+                #                       doesn't have.
+                #   partial          -- object-level only: this composite has
+                #                       a mix of the above among its parts.
+                "data_source": {
+                    "o2_pct": o2_pct_source,  # "simulated" only while Under-Air/CO scenario is active, "real" otherwise
+                    "o2_target": "real",
+                    "o2_band_low": "real",   # STEADY-trained, load-binned baseline mean +/- std (same baseline as o2's own z-score scoring)
+                    "o2_band_high": "real",
+                    "excess_air_pct": o2_pct_source,  # EA = O2/(21-O2)*100, pure function of o2_pct -- inherits its scenario-time flag
+                    "co_ppm": "simulated",
+                    "co_history": "simulated",
+                    "quadrant": "simulated",
+                    "quadrant_trail": "simulated",
+                    "afr_actual": afr_actual_source,
+                    "afr_design": "simulated",
+                    "css": "partial",
+                    "efficiency.excess_o2_pct": "real",
+                    "efficiency.dry_gas_loss_delta_pct": "real",
+                    "efficiency.avoidable_heat_kcal_hr": "real",
+                    "efficiency.avoidable_cost_inr_per_hr": "simulated",
+                    "guidance": "partial",
+                    # The one value guidance's text computes that ISN'T just a
+                    # re-display of an already-flagged field above (X/Y/Z/B/C/D
+                    # all reuse o2_pct/o2_target/excess_air_pct/efficiency.*/
+                    # co_ppm, already flagged): the FD damper reduction % (A)
+                    # in the HIGH O2 template. No calibrated damper-position
+                    # curve exists in this data -- it's approximated as the
+                    # excess-air-percentage-point delta between current and
+                    # target O2. Built entirely from real O2/target, but an
+                    # approximation, not a measured or validated value --
+                    # flagged distinctly so it can't be mistaken for either
+                    # "real" (measured) or "simulated" (fabricated).
+                    "guidance.fd_damper_reduction_pct": "derived_estimate",
+                },
             },
             "cross_validation": cross_validation_payload,
             "alerts": self._alert_payload(),
@@ -685,6 +1125,7 @@ class RealDataStateBuilder:
 
     def _fire_or_update_alert(
         self, alert_id: str, key: str, name: str, severity: str, kind: str, message: str, now_mono: float,
+        priority: str | None = None,
     ) -> None:
         existing = self._alerts.get(alert_id)
         if existing and existing.active:
@@ -692,6 +1133,7 @@ class RealDataStateBuilder:
             existing.message = message
             existing.last_update_ts = _now_iso()
             existing.below_threshold_since = None
+            existing.priority = priority
             return
         self._alerts[alert_id] = Alert(
             id=alert_id,
@@ -702,7 +1144,24 @@ class RealDataStateBuilder:
             message=message,
             first_ts=_now_iso(),
             last_update_ts=_now_iso(),
+            priority=priority,
         )
+
+    def _check_combustion_ack_snooze(self, now_mono: float) -> None:
+        """COMBUSTION-kind alerts only (see module docstring): an
+        acknowledged alert that's still active COMBUSTION_ACK_SNOOZE_SECONDS
+        after it was acked re-arms (acknowledged -> False) automatically.
+        Module 1's other alert kinds never call this -- they stay
+        acknowledged until the underlying condition clears, unchanged.
+        """
+        for a in self._alerts.values():
+            if (
+                a.kind == "COMBUSTION" and a.active and a.acknowledged
+                and a.acknowledged_mono is not None
+                and (now_mono - a.acknowledged_mono) >= COMBUSTION_ACK_SNOOZE_SECONDS
+            ):
+                a.acknowledged = False
+                a.acknowledged_mono = None
 
     def _mark_below_threshold(self, alert_id: str, now_mono: float) -> None:
         a = self._alerts.get(alert_id)
@@ -726,6 +1185,7 @@ class RealDataStateBuilder:
                 "cleared_ts": a.cleared_ts,
                 "active": a.active,
                 "acknowledged": a.acknowledged,
+                "priority": a.priority,
             })
         return out[:50]
 
