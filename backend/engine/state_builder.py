@@ -54,12 +54,19 @@ resolvable real too:
   - afr_actual: NOW REAL -- Total Air Flow (TOTAL_AIR_FLOW, already
     derived by Module 1) / Fuel Flow (new: config/hindalco_boiler9_pai_s03_v1.yaml,
     raw tag "FUEL FLOW"), replacing the old formula-off-O2 simulation.
-  - afr_design: still simulated (same old formula) -- needs Carbon% and
-    Hydrogen% from the coal's Ultimate Analysis, not yet available (O%,
-    N%, S% are, C and H aren't). Recomputed on the Layer-3 (per-shift)
-    cadence hook below so swapping in real Ultimate-Analysis-based logic
-    in a later phase doesn't require restructuring, even though the
-    formula itself hasn't changed yet.
+  - afr_design: still simulated (same old formula) -- needs the coal's full
+    Ultimate Analysis (Carbon%, Hydrogen%, Oxygen%, Nitrogen%, Sulfur%), not
+    yet available. CORRECTED (found during PAI-S02 integration,
+    config/hindalco_boiler9_pai_s02_v1.yaml): none of O%/N%/S% are actually
+    wired in anywhere in this repo either, despite this comment previously
+    claiming otherwise -- grepped config/*.yaml, engine/*.py, shared/*.py
+    and found no COAL_O_LAB/COAL_N_LAB/COAL_S_LAB keys or values. Only GCV
+    is a real fuel constant. All five ultimate-analysis percentages are
+    blocked on the same lab report Punarbasu needs to supply for PAI-S02's
+    fuel.* inputs -- one ask unblocks both. Recomputed on the Layer-3
+    (per-shift) cadence hook below so swapping in real Ultimate-Analysis-
+    based logic in a later phase doesn't require restructuring, even though
+    the formula itself hasn't changed yet.
   - efficiency.excess_o2_pct / dry_gas_loss_delta_pct: real (always were,
     incidentally -- pure functions of already-real o2/target/stack_temp).
     efficiency.avoidable_cost_inr_per_hr: still simulated -- needs a real
@@ -73,6 +80,36 @@ resolvable real too:
   - css: still "partial" -- S_O2 sub-term real, S_CO and S_Q sub-terms
     simulated (CO-gated). S_AFR term is a Phase-B placeholder (needs
     afr_design, see above).
+
+Interconnection / effective values (PAI-S01 <-> PAI-S02 <-> PAI-S03) —
+an interconnection audit found PAI-S02 reading raw tag values independently
+of PAI-S01's scoring and PAI-S03's scenario logic: two tabs open at once
+could show different O2/feedwater values for "the same" plant reading
+during a scenario. Fixed in _tick() by making every tag more than one
+module reads go through ONE resolution, in this order:
+  1. PAI-S01's own parameter-scoring loop runs first (raw read + Sensor-
+     Data-Quality-Drop invalidation + stale-streak detection), producing
+     `results` (a list of ParamResult, one per CSV_COLUMN key).
+  2. PAI-S03's combustion block resolves the final o2_value/o2_pct_source
+     from `results["o2"]` + any active O2-biasing scenario (Under-Air /
+     Severe Under-Air).
+  3. PAI-S02's efficiency calc runs LAST, consuming the SAME `results`
+     entries (steam_flow, steam_pressure, steam_temp, feedwater_flow --
+     via `_reused_field()`) and the SAME finalized o2_value/data_source
+     PAI-S03 just resolved -- never its own raw row.get(...) call. The two
+     PAI-S02-only tags with no PAI-S01 equivalent (FW_PR_TO_FCS,
+     FEEDWATER_TEMP_TO_FCS) get their own stale-streak tracker
+     (self._s02_stale_runtime + _update_stale(), same rule as step 1) since
+     there's no PAI-S01 ParamResult to borrow for those two.
+  A None value anywhere in PAI-S02's resolved inputs (e.g. feedwater_flow
+  invalidated by Sensor Data Quality Drop) makes efficiency_engine.adapter's
+  run_efficiency() return status:"data_gap" instead of computing through a
+  gap silently -- matching PAI-S01's own behavior for that same scenario,
+  not an independent fallback.
+  GCV Check WARN (Dulong/measured HHV factor outside its configured band)
+  now fires a real, ack-able "EFFICIENCY"-kind alert via the same
+  _fire_or_update_alert()/_mark_below_threshold()/auto-clear mechanism
+  every other alert kind uses, not just a badge on the dashboard card.
 
 Calculation cadence (3-layer model, PAI-S03 Dashboard_Method spec):
   - Layer 1 (every tick, ~2s replay cadence): O2, CO, quadrant, alert
@@ -148,6 +185,10 @@ import pandas as pd
 from clusters.cluster_baseline import get_cluster1_baseline
 from clusters.cluster_features import build_cluster_view
 from clusters.cluster_validator import validate_row as validate_cluster_row
+from efficiency_engine.adapter import (
+    GCV_CHECK_LOWER, GCV_CHECK_UPPER, GCV_KCAL_PER_KG, ETA_DESIGN_PCT,
+    run_efficiency, classify_co_flag,
+)
 from engine.baseline import TRAIN_FRAC, get_baseline
 from engine.mode_classifier import MODE_VALIDATION_NOTES
 from engine.mode_classifier import classify as classify_modes
@@ -160,13 +201,14 @@ from engine.scoring import (
     score_parameter,
 )
 from shared.chronological_split import chronological_split
-from shared.data_quality import STALE_STREAK_ROWS
+from shared.data_quality import STALE_STREAK_ROWS, TRAINING_STALE_STREAK_ROWS
 from shared.feature_extraction import build_feature_view, load_config
 from shared.raw_loader import load_raw
 
 DATA_PATH = Path(__file__).parent.parent / "data" / "processed" / "module1_features.csv"
 CLUSTER_CONFIG_PATH = Path(__file__).parent.parent / "clusters" / "cluster_config.yaml"
 S03_CONFIG_PATH = Path(__file__).parent.parent / "config" / "hindalco_boiler9_pai_s03_v1.yaml"
+S02_CONFIG_PATH = Path(__file__).parent.parent / "config" / "hindalco_boiler9_pai_s02_v1.yaml"
 
 # Relationship metadata for the /state "cross_validation" field and CLUSTER
 # alerts -- display name + human-readable member list, keyed by the same
@@ -249,6 +291,49 @@ SENSOR_DROP_KEYS = {"stack_temp", "fegt", "feedwater_flow"}
 # baseline training-data filtering (engine/baseline.py, clusters/
 # cluster_baseline.py) uses the exact same threshold as this live detector,
 # not a second definition that could drift.
+
+
+def _update_stale(
+    rt: "ParamRuntimeState", actual: float | None, threshold: int = STALE_STREAK_ROWS
+) -> bool:
+    """Same streak-based frozen-value rule as the per-parameter loop below,
+    factored out so PAI-S02's own tags (FW_PR_TO_FCS, FEEDWATER_TEMP_TO_FCS
+    -- no PAI-S01 ParamResult exists for either) get the identical safety
+    net PAI-S01's parameters already have, not a second implementation that
+    could drift. `rt` just needs `.last_raw`/`.stale_streak` -- any
+    ParamRuntimeState instance works, including ones outside
+    self._param_runtime.
+
+    `threshold` defaults to the live STALE_STREAK_ROWS (3) rule every
+    PAI-S01 parameter and the two PAI-S02-only tags above use. PAI-S02's
+    Gate 3 (Stack Temp) passes TRAINING_STALE_STREAK_ROWS (12) instead --
+    STACK_TEMPERATURE's whole-degree quantization trips the 3-row rule on
+    ordinary slow drift, not genuine freezing (same reasoning as Cluster 1's
+    training-exclusion threshold). Scoped to that one call site only --
+    Module 1's own live parameter-grid alerting for stack_temp still uses
+    the 3-row default via the main scoring loop below."""
+    if actual is not None and rt.last_raw is not None and actual == rt.last_raw:
+        rt.stale_streak += 1
+    else:
+        rt.stale_streak = 0
+    rt.last_raw = actual
+    return rt.stale_streak >= threshold
+
+
+# ---- Phase D: Daily/Shift Summary Table -- fixed 8-hour blocks over the
+# REPLAYED row's own source_ts, not wall-clock. Our data is a historical
+# replay (not genuinely live shifts), so this is a reasonable fixed time
+# window over the replay for this phase, not a real plant shift schedule --
+# a documented simplification, per the brief. ----
+SHIFT_HOURS = 8
+
+
+def _shift_key(ts: datetime) -> tuple[str, str]:
+    shift_no = ts.hour // SHIFT_HOURS + 1
+    date_str = ts.date().isoformat()
+    label = f"{date_str} Shift {shift_no} ({(shift_no - 1) * SHIFT_HOURS:02d}-{shift_no * SHIFT_HOURS:02d}h)"
+    return f"{date_str}_S{shift_no}", label
+
 
 AMBIENT_TEMP = 30.0
 GCV = 3610.0  # real plant value (config/hindalco_boiler9_pai_s01_v2.yaml: COAL_GCV static_config,
@@ -585,7 +670,52 @@ class RealDataStateBuilder:
                 "expected identical timestamp sequences."
             )
 
+        # PAI-S02 (efficiency): same pattern again, for the one additional
+        # tag boiler_duty.FW_PR_TO_FCS needs that Module 1 doesn't already
+        # extract -- see config/hindalco_boiler9_pai_s02_v1.yaml.
+        s02_config = load_config(S02_CONFIG_PATH)
+        s02_view_full = build_feature_view(raw_df, s02_config).sort_values("Timestamp").reset_index(drop=True)
+        _s02_train, s02_test_view, _s02_split_info = chronological_split(s02_view_full, "Timestamp", TRAIN_FRAC)
+        self._s02_view = s02_test_view
+
+        if len(self._s02_view) != self._n_rows or not (
+            self._df["Timestamp"].reset_index(drop=True) == self._s02_view["Timestamp"].reset_index(drop=True)
+        ).all():
+            raise RuntimeError(
+                "Module 1 and PAI-S02 replay windows are misaligned -- "
+                "expected identical timestamp sequences."
+            )
+
+        self._last_efficiency_snapshot: dict[str, Any] = {}
+
         self._param_runtime: dict[str, ParamRuntimeState] = {k: ParamRuntimeState(k) for k in CSV_COLUMN}
+
+        # PAI-S02 tags with no PAI-S01 ParamResult equivalent (FW_PR_TO_FCS,
+        # FEEDWATER_TEMP_TO_FCS aren't in CSV_COLUMN/PARAM_BY_KEY) get their
+        # own minimal stale-streak tracker via the same ParamRuntimeState/
+        # _update_stale rule every PAI-S01 parameter already uses -- see
+        # efficiency_engine/adapter.py's boiler_duty_fields docstring.
+        self._s02_stale_runtime: dict[str, ParamRuntimeState] = {
+            "FW_PR_TO_FCS": ParamRuntimeState("FW_PR_TO_FCS"),
+            "FEEDWATER_TEMP_TO_FCS": ParamRuntimeState("FEEDWATER_TEMP_TO_FCS"),
+        }
+        # PAI-S02 Gate 3's own independent Stack Temp staleness tracker --
+        # deliberately separate from self._param_runtime["stack_temp"] (which
+        # PAI-S01's live parameter grid uses at the 3-row STALE_STREAK_ROWS
+        # threshold). Gate 3 reads the same raw STACK_TEMPERATURE tag but
+        # judges staleness at the 12-row TRAINING_STALE_STREAK_ROWS
+        # threshold instead, so an independent streak counter is required --
+        # sharing self._param_runtime["stack_temp"]'s counter would conflate
+        # the two thresholds' streaks.
+        self._s02_stack_temp_gate_runtime = ParamRuntimeState("stack_temp_gate3")
+
+        # Phase D: Daily/Shift Summary Table accumulator, keyed by
+        # _shift_key()'s fixed 8-hour block over the row's own source_ts.
+        # Naturally bounded -- the test window loops forever
+        # (self._row_idx wraps), so a later loop pass revisits an existing
+        # key and just updates its running average, never grows past however
+        # many real calendar shifts exist in the test window.
+        self._shift_stats: dict[str, dict[str, Any]] = {}
         self._boi_history: Deque[dict[str, float]] = deque(maxlen=HISTORY_LEN)
         self._alerts: dict[str, Alert] = {}
 
@@ -674,6 +804,7 @@ class RealDataStateBuilder:
         row = self._df.iloc[self._row_idx]
         cluster_row = self._cluster_view.iloc[self._row_idx]
         fuel_row = self._s03_view.iloc[self._row_idx]
+        s02_row = self._s02_view.iloc[self._row_idx]
         row_mode: str = self._modes.iloc[self._row_idx]
         source_ts = row["Timestamp"]
 
@@ -708,12 +839,7 @@ class RealDataStateBuilder:
 
             # stale-value detector: streak of consecutive rows equal to the
             # previous raw reading, independent of the sensor-drop scenario
-            if actual is not None and rt.last_raw is not None and actual == rt.last_raw:
-                rt.stale_streak += 1
-            else:
-                rt.stale_streak = 0
-            rt.last_raw = actual
-            is_stale = rt.stale_streak >= STALE_STREAK_ROWS
+            is_stale = _update_stale(rt, actual)
             stale_flags[key] = is_stale
 
             data_source = "stale" if is_stale else DATA_SOURCE_OVERRIDE.get(key, "real")
@@ -799,6 +925,191 @@ class RealDataStateBuilder:
             # constants' comment for why P1 needs a reliable trigger.
             o2_value = min(SEVERE_UNDER_AIR_O2_CAP_PCT, o2_value + SEVERE_UNDER_AIR_O2_BIAS_PCT)
             o2_pct_source = "simulated"
+
+        # ---- PAI-S02: boiler efficiency (ASME PTC-4-style indirect/
+        # heat-loss method, backend/efficiency_engine/). Interconnection fix:
+        # this runs HERE, after PAI-S01's scoring loop and PAI-S03's O2
+        # scenario-bias resolution above -- not before them -- so it reads
+        # the SAME effective o2_value PAI-S03 is about to use below, and the
+        # SAME ParamResult objects (PAI-S01's own stale-detection + Sensor-
+        # Data-Quality-Drop invalidation already applied) for every
+        # boiler_duty field it shares with PAI-S01. Never an independent raw
+        # row read anymore -- see efficiency_engine/adapter.py's module
+        # docstring for the full rationale and
+        # config/hindalco_boiler9_pai_s02_v1.yaml for why most non-
+        # boiler_duty inputs are still synthetic_needed. ----
+        def _reused_field(key: str) -> tuple[float | None, str]:
+            r = next(x for x in results if x.key == key)
+            return (r.value, r.data_source) if r.valid else (None, r.data_source)
+
+        fw_pr_raw = s02_row.get("FW_PR_TO_FCS")
+        fw_pr_value = None if pd.isna(fw_pr_raw) else float(fw_pr_raw)
+        fw_pr_stale = _update_stale(self._s02_stale_runtime["FW_PR_TO_FCS"], fw_pr_value)
+        fw_pr_source = "stale" if fw_pr_stale else "real"
+
+        fw_temp_raw = row.get("FEEDWATER_TEMP_TO_FCS")
+        fw_temp_value = None if pd.isna(fw_temp_raw) else float(fw_temp_raw)
+        fw_temp_stale = _update_stale(self._s02_stale_runtime["FEEDWATER_TEMP_TO_FCS"], fw_temp_value)
+        fw_temp_source = "stale" if fw_temp_stale else "real"
+
+        boiler_duty_fields = {
+            "MAIN_STEAM_FLOW": _reused_field("steam_flow"),
+            "MAIN_STEAM_PRESSURE": _reused_field("steam_pressure"),
+            "MAIN_STEAM_TEMPERATURE": _reused_field("steam_temp"),
+            "FEEDWATER_FLOW": _reused_field("feedwater_flow"),
+            "FW_PR_TO_FCS": (fw_pr_value, fw_pr_source),
+            "FEEDWATER_TEMP_TO_FCS": (fw_temp_value, fw_temp_source),
+        }
+        # O2 for PAI-S02 = the exact value PAI-S03 resolved just above --
+        # "stale" if the underlying tag is frozen (independent of any
+        # scenario, takes priority), else whatever o2_pct_source already
+        # says (real / simulated-under-scenario).
+        o2_efficiency_source = "stale" if o2_result.data_source == "stale" else o2_pct_source
+
+        # Gate: Stack Temp validity (spec) -- reads the same raw
+        # STACK_TEMPERATURE tag PAI-S01's own ParamResult (`results` entry,
+        # looked up separately below for a different purpose) is built from,
+        # but judges staleness independently at the 12-row
+        # TRAINING_STALE_STREAK_ROWS threshold rather than the live 3-row
+        # STALE_STREAK_ROWS rule -- STACK_TEMPERATURE's whole-degree
+        # quantization trips the 3-row rule on ordinary slow drift, not
+        # genuine freezing (same reasoning as Cluster 1's training-exclusion
+        # threshold). Scoped to this Gate 3 check only -- PAI-S01's own live
+        # parameter-grid alerting for stack_temp is untouched and still
+        # uses the 3-row rule. See run_efficiency()'s docstring for why
+        # Stack Temp is a proxy gate today, not yet DGL's literal numeric
+        # input.
+        stack_temp_raw = row.get("STACK_TEMPERATURE")
+        stack_temp_gate_value = None if pd.isna(stack_temp_raw) else float(stack_temp_raw)
+        stack_temp_gate_stale = _update_stale(
+            self._s02_stack_temp_gate_runtime, stack_temp_gate_value,
+            threshold=TRAINING_STALE_STREAK_ROWS,
+        )
+        stack_temp_gate_source = "stale" if stack_temp_gate_stale else "real"
+
+        # Gate: direct-vs-indirect mass-balance cross-check (spec) -- real,
+        # independent "FUEL FLOW" tag, already extracted by PAI-S03's own
+        # config (self._s03_view / fuel_row). Only a basic NaN check exists
+        # for this tag today (matching how PAI-S03 itself treats it for
+        # afr_actual) -- tagged "real" whenever present.
+        fuel_flow_raw = fuel_row.get("FUEL_FLOW")
+        fuel_flow_value = None if pd.isna(fuel_flow_raw) else float(fuel_flow_raw)
+
+        efficiency_result = run_efficiency(
+            boiler_duty_fields, o2_value, o2_efficiency_source,
+            stack_temp_data_source=stack_temp_gate_source,
+            fuel_flow_tph=fuel_flow_value, fuel_flow_data_source="real",
+        )
+        self._last_efficiency_snapshot = {
+            "ts": _now_iso(),
+            "source_timestamp": source_ts.isoformat(),
+            # Reused from Module 1's own already-computed load_pct (line
+            # ~785, well before this point in the same tick) -- Phase D's
+            # Trend Panel secondary axis needs unit load alongside
+            # efficiency, and this is the same single-source-of-truth value
+            # PAI-S01 itself displays, not an independent read.
+            "unit_load_pct": round(load_pct, 1),
+            **efficiency_result,
+        }
+
+        # ---- Fix 3: GCV Check WARN is a real, ack-able alert now, not just
+        # a badge on the dashboard card -- same _fire_or_update_alert/
+        # _mark_below_threshold/auto-clear mechanism every other alert kind
+        # already uses, new "EFFICIENCY" kind so it's distinguishable in the
+        # Alarm & Event Log. ----
+        gcv_warn = (
+            efficiency_result.get("status") == "ok"
+            and efficiency_result["gcv_check"]["values"]["correction_required"]
+        )
+        if gcv_warn:
+            g_factor = efficiency_result["gcv_check"]["values"]["g_factor"]
+            self._fire_or_update_alert(
+                "efficiency::gcv_check", "gcv_check", "GCV Check", "amber", "EFFICIENCY",
+                f"GCV CHECK WARN — Dulong/Measured HHV factor {g_factor:.4f} outside "
+                f"configured band [{GCV_CHECK_LOWER:.2f}, {GCV_CHECK_UPPER:.2f}]",
+                now_mono,
+            )
+        else:
+            self._mark_below_threshold("efficiency::gcv_check", now_mono)
+
+        # ---- Phase A Gate 1: direct-vs-indirect mass-balance cross-check
+        # (spec). Same alert mechanism as GCV Check WARN. NOTE (see
+        # efficiency_engine/adapter.py's run_efficiency() assumption_notes):
+        # this currently fires often -- not primarily because of real flow-
+        # meter problems, but because eta_indirect still runs on a
+        # placeholder fuel composition that barely moves with real
+        # conditions while eta_direct (real Fuel Flow x real GCV) does. Kept
+        # wired exactly per spec regardless -- becomes a genuinely
+        # meaningful signal once real Ultimate/Proximate Analysis lands. ----
+        mass_balance_bad = (
+            efficiency_result.get("status") == "ok"
+            and efficiency_result.get("direct_method", {}).get("mass_balance_discrepancy")
+        )
+        if mass_balance_bad:
+            dm = efficiency_result["direct_method"]
+            self._fire_or_update_alert(
+                "efficiency::mass_balance", "mass_balance", "Mass Balance", "amber", "EFFICIENCY",
+                f"MASS BALANCE DISCREPANCY — CHECK FLOW METERS — eta_direct {dm['eta_direct_hhv_pct']:.1f}% "
+                f"vs eta_indirect {dm['eta_indirect_hhv_pct']:.1f}% ({dm['deviation_pct']:+.1f} pts, "
+                f"threshold {dm['threshold_pct']:.1f})",
+                now_mono,
+            )
+        else:
+            self._mark_below_threshold("efficiency::mass_balance", now_mono)
+
+        # ---- Phase D: Efficiency Alert Cards -- reuses the two EFFICIENCY-
+        # kind alerts already fired above (mass_balance, gcv_check); never a
+        # separate alert source, per the brief. One card per alert that is
+        # currently ACTIVE (not only on the exact tick it fired), in the
+        # spec's [Parameter][Current][Design][Deviation][Recommended Check]
+        # format.
+        #
+        # Visual-consistency pass, Step 5: verified live (not assumed) that
+        # the underlying gate is correct -- abs(deviation_pct) > threshold
+        # genuinely drives mass_balance_bad, and the alert only stays
+        # "active" past that instant because of the same AUTO_CLEAR_SECONDS
+        # (30s) grace-period debounce every alert in this project already
+        # uses (GCV Check WARN, CLUSTER alerts), not a bug specific to this
+        # card. But a card can render mid-grace-period showing a small
+        # current-tick deviation number next to "ACTIVE" with nothing
+        # explaining why -- that IS a real display gap. `clearing` marks
+        # exactly that state (`below_threshold_since` set but not yet past
+        # AUTO_CLEAR_SECONDS) so the frontend can label it, instead of
+        # looking like the threshold logic disagrees with itself. ----
+        alert_cards = []
+        mb_alert = self._alerts.get("efficiency::mass_balance")
+        if mb_alert and mb_alert.active:
+            dm = efficiency_result.get("direct_method", {})
+            alert_cards.append({
+                "parameter": "Mass Balance (Direct vs Indirect)",
+                "current": dm.get("eta_direct_hhv_pct"),
+                "current_label": "eta_direct",
+                "design": dm.get("eta_indirect_hhv_pct"),
+                "design_label": "eta_indirect",
+                "deviation": dm.get("deviation_pct"),
+                "unit": "%",
+                "recommended_check": "Check Flow Meters",
+                "severity": mb_alert.severity,
+                "clearing": mb_alert.below_threshold_since is not None,
+            })
+        gcv_alert = self._alerts.get("efficiency::gcv_check")
+        if gcv_alert and gcv_alert.active:
+            g_factor = efficiency_result.get("gcv_check", {}).get("values", {}).get("g_factor")
+            alert_cards.append({
+                "parameter": "GCV Check (G-Factor)",
+                "current": g_factor,
+                "current_label": "g_factor",
+                "design": 1.0,
+                "design_label": f"band center [{GCV_CHECK_LOWER:.2f}-{GCV_CHECK_UPPER:.2f}]",
+                "deviation": (g_factor - 1.0) if g_factor is not None else None,
+                "unit": "",
+                "recommended_check": "Verify GCV lab entry / Dulong calc inputs",
+                "severity": gcv_alert.severity,
+                "clearing": gcv_alert.below_threshold_since is not None,
+            })
+        alert_cards.sort(key=lambda c: abs(c["deviation"]) if c["deviation"] is not None else 0.0, reverse=True)
+        self._last_efficiency_snapshot["alert_cards"] = alert_cards
+
         # Real band (Phase A follow-up): same STEADY-trained, load-binned
         # baseline already used for o2's own z-score scoring above -- mean
         # +/- std at this row's real load, not a hardcoded rule table.
@@ -829,6 +1140,18 @@ class RealDataStateBuilder:
         self._co_ppm = max(0.0, self._co_ppm * 0.5 + base_co * 0.5)
         self._co_history.append(round(self._co_ppm, 1))
 
+        # PAI-S02 Gate 3B (Phase B): the efficiency snapshot above was built
+        # before combustion's co_ppm for THIS tick existed yet (co_ppm is
+        # computed here, later in the same _tick()), so its Incomplete
+        # Combustion flag is patched in place now rather than reusing last
+        # tick's value -- same single-source-of-truth-per-tick discipline as
+        # every other shared value, just applied after the fact instead of
+        # before, since co_ppm has no PAI-S01-equivalent hoisting point.
+        if self._last_efficiency_snapshot.get("status") == "ok":
+            self._last_efficiency_snapshot["zone"]["flags"]["co_incomplete_combustion"] = (
+                classify_co_flag(self._co_ppm, "simulated")
+            )
+
         if self._co_ppm > 500:
             quadrant = {"id": "CO_CRITICAL", "label": "CO CRITICAL", "color": "red"}
         elif -0.5 <= o2_dev <= 1.5 and self._co_ppm < 200:
@@ -845,6 +1168,52 @@ class RealDataStateBuilder:
 
         stack_result = next(r for r in results if r.key == "stack_temp")
         stack_temp_value = stack_result.value if stack_result.valid else stack_result.expected
+
+        # ---- Phase D: Daily/Shift Summary Table accumulator update -- only
+        # on a tick where PAI-S02 actually computed ("ok"), so every column
+        # in a shift's row comes from the same set of ticks (no mixing an
+        # eta average from fewer ticks than the O2/Stack Temp/CO averages).
+        # "FA Carbon" uses unburned_carbon_loss_pct -- see decisions.md's
+        # Phase C note: this is the library's single combined
+        # unburned-carbon figure across all 4 ash streams, not a
+        # fly-ash-specific number (that split doesn't exist yet -- Awes ask
+        # list). Labeled accordingly in the frontend, not silently implied
+        # to be fly-ash-only. ----
+        if efficiency_result.get("status") == "ok":
+            shift_id, shift_label = _shift_key(source_ts)
+            bucket = self._shift_stats.setdefault(shift_id, {
+                "label": shift_label, "sum_eta": 0.0, "sum_dgl": 0.0,
+                "sum_fa_carbon": 0.0, "sum_gcv": 0.0, "sum_o2": 0.0,
+                "sum_stack_temp": 0.0, "sum_co": 0.0, "count": 0,
+                "first_ts": source_ts.isoformat(),
+            })
+            eff_vals = efficiency_result["efficiency"]["values"]
+            bucket["sum_eta"] += eff_vals["boiler_efficiency_hhv_pct"]
+            bucket["sum_dgl"] += eff_vals["dry_flue_gas_loss_pct"]
+            bucket["sum_fa_carbon"] += eff_vals["unburned_carbon_loss_pct"]
+            bucket["sum_gcv"] += GCV_KCAL_PER_KG
+            bucket["sum_o2"] += o2_value
+            bucket["sum_stack_temp"] += stack_temp_value
+            bucket["sum_co"] += self._co_ppm
+            bucket["count"] += 1
+            bucket["last_ts"] = source_ts.isoformat()
+
+        rows_sorted = sorted(self._shift_stats.values(), key=lambda b: b["last_ts"], reverse=True)[:12]
+        self._last_efficiency_snapshot["shift_summary"] = [
+            {
+                "label": b["label"],
+                "avg_eta_pct": round(b["sum_eta"] / b["count"], 2),
+                "avg_dgl_pct": round(b["sum_dgl"] / b["count"], 3),
+                "avg_fa_carbon_pct": round(b["sum_fa_carbon"] / b["count"], 3),
+                "avg_gcv_kcal_kg": round(b["sum_gcv"] / b["count"], 0),
+                "avg_o2_pct": round(b["sum_o2"] / b["count"], 2),
+                "avg_stack_temp_c": round(b["sum_stack_temp"] / b["count"], 1),
+                "avg_co_ppm": round(b["sum_co"] / b["count"], 1),
+                "eta_deviation_pct": round(ETA_DESIGN_PCT - (b["sum_eta"] / b["count"]), 2),
+                "n_ticks": b["count"],
+            }
+            for b in rows_sorted
+        ]
 
         # ---- afr_actual: REAL now (Phase A) -- Total Air Flow / Fuel Flow,
         # both real/derived. Falls back to the old simulated formula only if
@@ -1192,6 +1561,9 @@ class RealDataStateBuilder:
     # ---------- public API ----------
     def snapshot(self) -> dict[str, Any]:
         return self._last_snapshot
+
+    def efficiency_snapshot(self) -> dict[str, Any]:
+        return self._last_efficiency_snapshot
 
     @property
     def scenarios(self) -> list[str]:

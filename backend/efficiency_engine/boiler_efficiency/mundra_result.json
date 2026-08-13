@@ -1,0 +1,152 @@
+{
+  "psychrometrics": {
+    "status": "VALID",
+    "values": {
+      "saturation_pressure_bar": 0.03168531412275435,
+      "vapor_partial_pressure_bar": 0.011539791403507135,
+      "humidity_ratio_kg_kg_dry_air": 0.007344768762548793,
+      "water_fraction_kg_kg_wet_air": 0.007291216463625773
+    },
+    "warnings": []
+  },
+  "refuse": {
+    "status": "VALID",
+    "values": {
+      "total_unburned_carbon_in_refuse_pct": 3.4395,
+      "residue_kg_kg_fuel": 0.32528829076071475,
+      "unburned_carbon_kg_kg_fuel": 0.011188290760714783,
+      "carbon_burned_pct": 38.93117092392852,
+      "bed_ash_distribution_pct": 15,
+      "cyclone_ash_distribution_pct": 0,
+      "aph_ash_distribution_pct": 5,
+      "esp_ash_distribution_pct": 80,
+      "bed_ash_temperature_c": 800,
+      "cyclone_ash_temperature_c": 0,
+      "aph_ash_temperature_c": 173.57,
+      "esp_ash_temperature_c": 173.57
+    },
+    "warnings": []
+  },
+  "air_flue_gas": {
+    "status": "VALID",
+    "values": {
+      "theoretical_air_kg_kg_fuel": 4.885934773344172,
+      "excess_air_economizer_pct": 15.51260225592472,
+      "excess_air_air_heater_outlet_pct": 69.55672136166346,
+      "dry_air_economizer_kg_kg_fuel": 5.6438704012169705,
+      "dry_air_ah_outlet_kg_kg_fuel": 8.2844308095518,
+      "air_moisture_economizer_kg_kg_fuel": 0.04145292302273213,
+      "air_moisture_ah_outlet_kg_kg_fuel": 0.06084722862549287,
+      "water_from_fuel_kg_kg_fuel": 0.11199999999999999,
+      "water_from_hydrogen_kg_kg_fuel": 0.25023599999999996,
+      "wet_flue_gas_economizer_kg_kg_fuel": 6.371223324239703,
+      "wet_flue_gas_ah_outlet_kg_kg_fuel": 9.031178038177293,
+      "dry_flue_gas_economizer_kg_kg_fuel": 5.967534401216971,
+      "dry_flue_gas_ah_outlet_kg_kg_fuel": 8.608094809551801,
+      "air_heater_leakage_pct": 41.749513061606734,
+      "flue_gas_moisture_economizer_pct": 6.336128910861957,
+      "flue_gas_moisture_ah_outlet_pct": 4.684695914940473,
+      "econ_dry_gas_mol_kg_fuel": 0.1923691573820972,
+      "econ_o2_dry_vol_pct": 2.85,
+      "econ_co2_dry_vol_pct": 16.84933854505133,
+      "econ_so2_dry_vol_pct": 0.06971107318367434,
+      "econ_fuel_n2_dry_vol_pct": 0.15401989647119455,
+      "econ_air_n2_dry_vol_pct": 80.07693048529381,
+      "ah_dry_gas_mol_kg_fuel": 0.2835408590078143,
+      "ah_o2_dry_vol_pct": 8.67,
+      "ah_co2_dry_vol_pct": 11.431484935537588,
+      "ah_so2_dry_vol_pct": 0.04729568943069176,
+      "ah_fuel_n2_dry_vol_pct": 0.10449526677714192,
+      "ah_air_n2_dry_vol_pct": 79.74672410825458
+    },
+    "warnings": []
+  },
+  "enthalpy": {
+    "steam_exit_kj_kg": 2917.2253563358863,
+    "water_reference_kj_kg": 104.67,
+    "water_vapor_stack_kj_kg": 2823.176769698469,
+    "dry_gas_exit_kj_kg": 188.47373822961407,
+    "dry_gas_reference_kj_kg": 29.71688560146716,
+    "dry_air_entering_kj_kg": 28.567049099260778,
+    "water_vapor_exit_kj_kg": 355.38319262486056,
+    "water_vapor_entering_kj_kg": 53.08527594387049,
+    "fuel_entering_kj_kg": 18.786865979724737
+  },
+  "efficiency": {
+    "status": "VALID",
+    "values": {
+      "dry_flue_gas_loss_pct": 6.114008263688135,
+      "hydrogen_moisture_loss_pct": 4.390144527372831,
+      "fuel_moisture_loss_pct": 1.964929854480399,
+      "air_moisture_loss_pct": 0.0950715674537918,
+      "unburned_carbon_loss_pct": 2.433280943225472,
+      "sensible_heat_loss_pct": 0.49341010251492123,
+      "surface_radiation_loss_pct": 0.31,
+      "other_loss_pct": 0,
+      "entering_dry_air_credit_pct": 1.527308138866789,
+      "entering_air_moisture_credit_pct": 0.020845556389523727,
+      "fuel_sensible_heat_credit_pct": 0.1212419595538322,
+      "auxiliary_power_credit_pct": 0,
+      "total_heat_loss_pct": 15.800845258735551,
+      "total_heat_credit_pct": 1.669395654810145,
+      "boiler_efficiency_hhv_pct": 85.8685503960746
+    },
+    "warnings": []
+  },
+  "corrections": {
+    "status": "VALID",
+    "values": {
+      "air_temperature_correction_pct": 0.16446,
+      "air_humidity_correction_pct": 0.12918661866215847,
+      "fuel_moisture_correction_pct": 0.1824,
+      "fuel_hydrogen_correction_pct": 1.1341999999999999,
+      "fuel_hhv_correction_pct": -3.1530152499999993,
+      "sum_correction_pct": -1.5427686313378408,
+      "corrected_boiler_efficiency_hhv_pct": 87.41131902741243
+    },
+    "warnings": []
+  },
+  "boiler_duty": {
+    "status": "VALID",
+    "values": {
+      "heat_leaving_mw": 121.73951202288931,
+      "heat_entering_mw": 28.230234489563955,
+      "boiler_duty_mw": 93.50927753332536,
+      "boiler_duty_kcal_h": 80417978.67865981,
+      "q_out_main_steam_mw": 121.73951202288931,
+      "q_in_feedwater_mw": 28.230234489563955
+    },
+    "warnings": []
+  },
+  "fuel_firing": {
+    "status": "VALID",
+    "values": {
+      "fuel_firing_kg_s": 7.0277965417169375,
+      "fuel_firing_kg_h": 25300.067550180975,
+      "air_flow_kg_s": 34.3373555031627,
+      "fuel_heat_input_mw": 108.89816714269355
+    },
+    "warnings": []
+  },
+  "gcv_check": {
+    "status": "VALID",
+    "values": {
+      "dulong_hhv_kcal_kg": 3638.972,
+      "measured_hhv_kcal_kg": 3701.0007643068693,
+      "g_factor": 0.9832400022974634,
+      "correction_required": 0.0,
+      "correction_applied": 0.0
+    },
+    "warnings": []
+  },
+  "gas_calculated": {
+    "o2_air_heater_inlet_dry_pct": 2.85,
+    "o2_air_heater_outlet_dry_pct": 8.67,
+    "air_heater_leakage_pct": 41.749513061606734,
+    "corrected_gas_temp_ah_outlet_c": 219.3447703260458,
+    "enthalpy_air_leaving_btu_lbm": 64.9581138409498,
+    "enthalpy_air_entering_btu_lbm": 12.856498124285398,
+    "enthalpy_air_difference_btu_lbm": 52.10161571666441
+  },
+  "warnings": []
+}

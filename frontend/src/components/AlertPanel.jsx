@@ -10,6 +10,7 @@ const kindLabel = {
   co: "COMBUSTION",
   CLUSTER: "CROSS-VALIDATION",
   COMBUSTION: "COMBUSTION ALERT",
+  EFFICIENCY: "EFFICIENCY ALERT",
 };
 
 export default function AlertPanel({ alerts = [], compact = false }) {

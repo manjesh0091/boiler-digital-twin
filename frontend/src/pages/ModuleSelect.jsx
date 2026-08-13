@@ -18,6 +18,14 @@ const MODULES = [
     highlights: ["O₂ dial + target band", "CO-O₂ quadrant plot", "Efficiency impact ₹/hr"],
     testid: "module-card-pai-s03",
   },
+  {
+    id: "PAI-S02",
+    slug: "pai-s02",
+    title: "Boiler Efficiency Monitoring",
+    tagline: "ASME PTC-4-style indirect/heat-loss efficiency calculation with full loss breakdown and Appendix D-4 corrections.",
+    highlights: ["HHV efficiency + loss waterfall", "GCV check + D-4 corrections", "Data source / assumptions panel"],
+    testid: "module-card-pai-s02",
+  },
 ];
 
 export default function ModuleSelect() {

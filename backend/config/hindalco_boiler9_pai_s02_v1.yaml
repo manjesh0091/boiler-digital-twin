@@ -1,0 +1,274 @@
+# =============================================================================
+# PAI-S02 — Boiler Efficiency Monitoring
+# Tag Mapping Config — Plant: Hindalco Boiler-9 (CFBC, Unit 4)
+# Rev 1 — initial integration of the ASME PTC-4-style indirect/heat-loss
+# efficiency calculation library (backend/efficiency_engine/boiler_efficiency/),
+# tiered against the real historian export (data/raw/boiler9_cleaned_2024.csv,
+# 103 raw columns) plus Module 1 (hindalco_boiler9_pai_s01_v2.yaml) and
+# Module 2's (hindalco_boiler9_pai_s03_v1.yaml) existing tag mappings.
+#
+# Status vocabulary matches PAI-S01/PAI-S03: available / derived /
+# needs_verification / synthetic_needed / static_config.
+# =============================================================================
+
+plant_id: hindalco_boiler9
+boiler_type: CFBC
+timestamp_column: "Timestamp"
+
+# -----------------------------------------------------------------------------
+# Raw tag(s) this file adds to the extraction pipeline, via the same
+# shared/feature_extraction.build_feature_view() Module 1/Cluster 1/Module 2
+# already use. Everything else boiler_duty.* needs below already exists as a
+# column in module1_features.csv and is read directly off Module 1's own
+# replayed row -- only FW_PR_TO_FCS is new (confirmed present in the raw
+# historian export under this exact name; not yet extracted for any module).
+# -----------------------------------------------------------------------------
+parameters:
+  FW_PR_TO_FCS:
+    status: available
+    raw_tags: ["FW PR TO FCS"]
+    aggregation: single
+    unit: "kg/cm2"
+
+# -----------------------------------------------------------------------------
+# boiler_duty.* (models.BoilerDutyInputs) -- all six fields real. Five are
+# already extracted by Module 1 into module1_features.csv; the sixth
+# (FW_PR_TO_FCS) is the new tag added just above. No unit conversion needed
+# anywhere here -- the library's expected units (TPH, kg/cm2 abs, degC) match
+# Module 1's existing extraction exactly.
+# -----------------------------------------------------------------------------
+boiler_duty:
+  MAIN_STEAM_FLOW: {status: available, source: "module1_features.csv (PAI-S01 config)", unit: TPH}
+  MAIN_STEAM_PRESSURE: {status: available, source: "module1_features.csv", unit: "kg/cm2 (a)"}
+  MAIN_STEAM_TEMPERATURE: {status: available, source: "module1_features.csv", unit: degC}
+  FEEDWATER_FLOW: {status: available, source: "module1_features.csv", unit: TPH}
+  FEEDWATER_TEMP_TO_FCS: {status: available, source: "module1_features.csv", unit: degC}
+  FW_PR_TO_FCS: {status: available, source: "this file's own `parameters` block above", unit: "kg/cm2 (a)"}
+
+# -----------------------------------------------------------------------------
+# fuel.* (models.FuelAnalysis)
+#
+# CORRECTION to the original integration brief: the brief assumed
+# oxygen_pct/nitrogen_pct/sulfur_pct were already static config values from
+# Module 1, named COAL_O_LAB/COAL_N_LAB/COAL_S_LAB. That is NOT the case --
+# grepped the full repo (config/*.yaml, engine/*.py, shared/*.py,
+# clusters/*) and no such keys, nor any numeric O%/N%/S%/ash%/moisture%
+# value for this plant's coal, exist anywhere. The only real fuel constant
+# in this codebase is GCV. state_builder.py's own docstring asserts "O%, N%,
+# S% are [available]" but that claim isn't backed by an actual config entry
+# either -- likely a plan for a value that was never actually wired in.
+#
+# Net effect: the ENTIRE fuel ultimate + proximate analysis except HHV is
+# synthetic_needed, on the SAME blocking lab report (coal Ultimate + full
+# Proximate Analysis) that already blocks Module 2's afr_design. Do not
+# duplicate that ask to Punarbasu -- one lab report unblocks both modules'
+# remaining fuel-composition fields.
+# -----------------------------------------------------------------------------
+fuel:
+  hhv_kj_kg:
+    status: static_config
+    source: "config/hindalco_boiler9_pai_s01_v2.yaml COAL_GCV (3610 kcal/kg, Proximate Analysis basis, confirmed real plant value) -- converted kcal/kg -> kJ/kg (x4.1868)"
+    value_kj_kg: 15112.6
+  carbon_pct: {status: synthetic_needed, reason: "coal Ultimate Analysis not available -- same blocking lab report as Module 2's afr_design"}
+  hydrogen_pct: {status: synthetic_needed, reason: "same blocking lab report as carbon_pct"}
+  oxygen_pct: {status: synthetic_needed, reason: "brief assumed this was already static config (COAL_O_LAB) -- not found anywhere in repo, needs the same lab report"}
+  nitrogen_pct: {status: synthetic_needed, reason: "brief assumed COAL_N_LAB -- not found"}
+  sulfur_pct: {status: synthetic_needed, reason: "brief assumed COAL_S_LAB -- not found"}
+  ash_pct: {status: synthetic_needed, reason: "not mentioned in the brief; also not found. Needed by both fuel.* and refuse.* (ash mass-balance closure)"}
+  moisture_pct: {status: synthetic_needed, reason: "not found"}
+  volatile_matter_pct: {status: synthetic_needed, reason: "Optional in the dataclass, but orchestrator.run_energy_balance()'s fuel_entering_kj_kg term uses it unconditionally -- effectively required, not found"}
+  fixed_carbon_pct: {status: synthetic_needed, reason: "same as volatile_matter_pct -- effectively required, not found"}
+  placeholder_policy: >
+    adapter.py fills all seven blocked fields (+ VM/FC) from the library's
+    own bundled ASME Appendix D-4 reference coal
+    (efficiency_engine/examples/mundra_appendix_d4.json) as a clearly-flagged
+    placeholder composition -- NOT this plant's coal. data_source for every
+    one of these fields is tagged "synthetic" in the /api/efficiency
+    response, never "real".
+
+# -----------------------------------------------------------------------------
+# refuse.* (models.RefuseAnalysis) -- entirely new data category, not
+# touched by Module 1 or Module 2. Checked all 103 raw historian columns:
+# only 2 stray ash-related tags exist (cyclone ash OUTLET TEMPERATURE, A/B
+# side) -- no ash distribution %, no unburned-carbon %, no bed/APH/ESP ash
+# temperatures. This is a full new plant-input ask, not a naming-mismatch
+# fix like most of gas.* below.
+# -----------------------------------------------------------------------------
+refuse:
+  bed_ash_distribution_pct: {status: synthetic_needed}
+  cyclone_ash_distribution_pct: {status: synthetic_needed}
+  aph_ash_distribution_pct: {status: synthetic_needed}
+  esp_ash_distribution_pct: {status: synthetic_needed}
+  bed_ash_unburned_carbon_pct: {status: synthetic_needed}
+  cyclone_ash_unburned_carbon_pct: {status: synthetic_needed}
+  aph_ash_unburned_carbon_pct: {status: synthetic_needed}
+  esp_ash_unburned_carbon_pct: {status: synthetic_needed}
+  bed_ash_temperature_c: {status: synthetic_needed}
+  cyclone_ash_temperature_c:
+    status: needs_verification
+    candidate_raw_tags: ["CYCLONE -A ASH O/L TEMP", "CYCLONE B ASH O/L TEMP"]
+    note: >
+      Real cyclone-ash-outlet temperature tags DO exist (unlike the other
+      three ash-temperature fields, which have no candidate at all). Not
+      wired in yet -- using one real value alongside three synthetic ash
+      temperatures would be an inconsistent mix worth a deliberate decision,
+      not a silent default. Deferred pending plant/Punarbasu confirmation of
+      intent; adapter.py placeholder value used for now like the other three.
+  aph_ash_temperature_c: {status: synthetic_needed}
+  esp_ash_temperature_c: {status: synthetic_needed}
+  placeholder_policy: "adapter.py uses the bundled Appendix D-4 example's refuse block as the placeholder (ash distribution sums to exactly 100%, a hard library requirement) -- see fuel.placeholder_policy above."
+
+# -----------------------------------------------------------------------------
+# ambient.* (models.AmbientConditions) -- plant ambient weather data.
+# Checked all 103 raw historian columns for weather/humidity/pressure
+# keywords -- none exist. Not in the historian at all; needs an external
+# weather source or an explicit static assumption from Punarbasu.
+# -----------------------------------------------------------------------------
+ambient:
+  dry_bulb_c: {status: synthetic_needed}
+  pressure_bar_a: {status: synthetic_needed}
+  relative_humidity_pct: {status: synthetic_needed}
+  fuel_temp_c: {status: synthetic_needed, note: "no coal/fuel temperature tag found either"}
+
+# -----------------------------------------------------------------------------
+# gas.* (models.GasMeasurements)
+# -----------------------------------------------------------------------------
+gas:
+  o2_economizer_outlet_dry_pct:
+    status: needs_verification
+    candidate_raw_tags: ["O2 LHS", "O2 RHS"]
+    note: >
+      Module 1's only real O2 tag (FLUE_GAS_O2_APH_INLET, average of O2
+      LHS/RHS) is physically at the air-heater flue-gas INLET. In this
+      plant's single-economizer-stage gas path (furnace -> ECO-1 -> air
+      heater -> ESP -> stack) that is the same position as "economizer
+      outlet" -- mapped here as a DOCUMENTED assumption (see this field's
+      data_source note in the API response), not silently reused for both
+      O2 fields below.
+  o2_air_heater_outlet_dry_pct:
+    status: synthetic_needed
+    note: >
+      No second O2 sensor exists downstream of the air heater anywhere in
+      the historian export. air_heater_leakage_pct (and everything
+      downstream of it: dry/wet flue-gas rates, dry-gas-loss term) is
+      therefore placeholder-driven until a real AH-outlet O2 tag is
+      confirmed or installed. Do NOT reuse o2_economizer_outlet_dry_pct's
+      value here -- that would force computed leakage to exactly 0, a
+      fabricated-looking-real number, not an honest "unknown."
+  gas_temp_air_heater_inlet_c:
+    status: needs_verification
+    candidate_raw_tags: []
+    note: >
+      No tag explicitly named "air heater" exists. Closest candidates in the
+      raw export are economizer/ESP-path tags (FG TEMP ECO-1 I/L, FG TEMP AT
+      ECO-1 O/L, FG TEMP BEFORE ESP, FG TEMP AFTER ESP) -- none confirmed as
+      the air-heater-specific point. Same naming-mismatch pattern this
+      project already hit with Furnace Draft/Drum Level; needs plant
+      confirmation before mapping any of them here.
+  gas_temp_air_heater_outlet_c:
+    status: needs_verification
+    note: "Same situation as gas_temp_air_heater_inlet_c -- no confirmed tag."
+  air_temp_air_heater_inlet_c:
+    status: needs_verification
+    candidate_raw_tags: ["AIR TEMP AT AIR BOX A", "AIR TEMP AT AIR BOX B"]
+    note: >
+      Air-box tags exist but read, physically, as POST-air-heater (hot
+      secondary air delivered to the windbox) -- i.e. closer to the air
+      heater's air-side OUTLET than its INLET, the opposite point this
+      field name asks for. Flagged as a candidate, not mapped, pending
+      plant confirmation of the actual tap location.
+  air_temp_fan_inlet_c:
+    status: synthetic_needed
+    note: "Optional in the dataclass -- orchestrator falls back to ambient.dry_bulb_c when None, itself synthetic_needed, so this doesn't add a new blocker."
+  flue_gas_specific_heat_cpg_btu_lbm_f:
+    status: static_config
+    note: "Not a live tag -- a near-constant physical-property assumption, not sensor-derived. Library's own Appendix D-4 example uses 0.264; reused as the placeholder pending Awes's plant-specific recommendation."
+    value: 0.264
+
+# -----------------------------------------------------------------------------
+# enthalpy.* (models.EnthalpyInputs)
+# -----------------------------------------------------------------------------
+enthalpy:
+  reference_water_temperature_c:
+    status: static_config
+    note: "ASME reference-state convention, not plant-specific. Library's own example uses 25 degC (standard reference temperature)."
+    value: 25.0
+
+# -----------------------------------------------------------------------------
+# assumptions.* (models.EfficiencyAssumptions) -- engineering-judgment
+# constants. The dataclass ships with Awes's own library defaults baked
+# directly into the authoritative code (models.py); used as-is here rather
+# than invented, pending an explicit plant-specific override from Awes.
+# -----------------------------------------------------------------------------
+assumptions:
+  surface_radiation_loss_pct: {status: static_config, source: "library default (models.EfficiencyAssumptions)", value: 0.18}
+  other_loss_pct: {status: static_config, source: "library default", value: 0.25}
+  auxiliary_power_credit_pct: {status: static_config, source: "library default", value: 0.0}
+  additional_moisture_kg_kg_fuel: {status: static_config, source: "library default", value: 0.0}
+  hydrogen_to_water_factor: {status: static_config, source: "library default (ASME constant)", value: 8.937}
+  unburned_carbon_heating_value_kj_kg: {status: static_config, source: "library default (ASME constant)", value: 33700.0}
+  spent_sorbent_lbm_per_100_lbm_fuel: {status: static_config, source: "library default -- 0 unless/until sorbent injection is confirmed on this unit", value: 0.0}
+
+# -----------------------------------------------------------------------------
+# gcv_check.* (models.GCVCheckInputs) -- validation-band configuration, not
+# a sensor tag.
+# -----------------------------------------------------------------------------
+gcv_check:
+  lower: {status: static_config, value: 0.95}
+  upper: {status: static_config, value: 1.04}
+  apply_correction:
+    status: static_config
+    value: false
+    note: "Matches library README control #6: the G-factor/GCV correction is disabled by default because its direction requires engineering approval. Left off here for the same reason -- not this project's call to flip."
+
+# -----------------------------------------------------------------------------
+# scoring.* -- Phase B of the PAI-S02 Spec Alignment brief. Efficiency Gauge
+# zone thresholds, plant-provided by the user (not derived, not guessed).
+# eta_design_pct and eta_guaranteed_pct are two DIFFERENT numbers from two
+# different concepts -- do not conflate them:
+#   - eta_design_pct: the design-condition target efficiency. Used in the
+#     spec's own deviation formula (eta_deviation = eta_design - eta_actual)
+#     that drives the gauge's GREEN/AMBER/RED zone.
+#   - eta_guaranteed_pct: the contractual/OEM guarantee-test floor. NOT used
+#     in the deviation formula -- stored for a possible future lower-bound
+#     warning, kept separate and clearly labeled per the user's instruction.
+# Checked (not assumed): the Appendix D-4 corrected efficiency this repo
+# already computes clusters at ~86.8-87.1% (reference-coal placeholder,
+# 2070-tick offline sweep) -- close to eta_design_pct's 87.71% but not equal,
+# and also above eta_guaranteed_pct's 86%. Plausible in principle (Appendix
+# D-4 corrections exist specifically to normalize a test result to
+# design/guarantee conditions for comparison), but our corrected figure runs
+# on the bundled reference-coal placeholder, not this plant's real fuel
+# analysis -- so this could be a coincidence of placeholder data as easily as
+# a real methodological correspondence. Not asserted as equivalent; revisit
+# once real Ultimate/Proximate Analysis replaces the placeholder (fuel.* note).
+# -----------------------------------------------------------------------------
+scoring:
+  eta_design_pct: {status: static_config, source: "plant-provided (user, 2026-08-12)", value: 87.71, note: "design-condition target efficiency; used as eta_design in eta_deviation = eta_design - eta_actual"}
+  eta_guaranteed_pct: {status: static_config, source: "plant-provided (user, 2026-08-12)", value: 86.0, note: "contractual/OEM guarantee-test floor; NOT used in the deviation formula -- stored separately for a possible future lower-bound warning"}
+  eta_deviation_green_max_pct: {status: static_config, source: "PAI-S02 spec (Scoring_Model)", value: 1.0}
+  eta_deviation_amber_max_pct: {status: static_config, source: "PAI-S02 spec (Scoring_Model)", value: 2.5}
+  excess_dgl_setpoint: {status: needs_verification, value: null, note: "spec-named flag (DGL > plant-specific-setpoint-A -> amber 'Excess Dry Gas Loss'), setpoint value NOT given numerically in the spec -- configurable-pending, not invented. Punarbasu/Awes ask."}
+  excess_fly_ash_setpoint: {status: needs_verification, value: null, note: "spec-named flag (C_FA > plant-specific-setpoint-B -> amber 'Excess Unburnt Carbon'), setpoint value NOT given numerically in the spec -- configurable-pending, not invented. Punarbasu/Awes ask."}
+  co_incomplete_combustion_ppm: {status: static_config, source: "PAI-S02 spec (Scoring_Model)", value: 300, note: "CO > 300 ppm -> RED 'Incomplete Combustion'. Threshold is spec-given, but the CO value it compares against (combustion module's co_ppm) is simulated, not a real tag -- same blocker as decision 17. Computed and shown, tagged data_source: simulated, does not drive the main gauge zone color."}
+
+# -----------------------------------------------------------------------------
+# Consolidated blocked-input summary (see also engine adapter docstring and
+# the integration report) -- everything below needs a plant/Punarbasu (P)
+# or Awes (A) answer before it can move out of synthetic_needed /
+# needs_verification:
+#   P: fuel ultimate + proximate analysis (C%, H%, O%, N%, S%, ash%,
+#      moisture%, VM%, FC%) -- ONE lab report, shared blocker with Module
+#      2's afr_design.
+#   P: refuse/ash distribution %, unburned-carbon %, ash temperatures --
+#      full new plant-input category.
+#   P: ambient weather (dry bulb, pressure, RH) -- external source or
+#      static assumption needed.
+#   P: air-heater-specific gas/air temperature tag confirmation (naming
+#      mismatch, same pattern as Furnace Draft/Drum Level).
+#   P: second O2 measurement location (air heater outlet) for leakage calc.
+#   A: surface_radiation_loss_pct / other_loss_pct plant-specific override
+#      (library defaults used for now, not blocking).
+#   A: flue_gas_specific_heat_cpg_btu_lbm_f plant-specific override
+#      (library example value used for now, not blocking).
+# -----------------------------------------------------------------------------

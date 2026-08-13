@@ -1,0 +1,298 @@
+# =============================================================================
+# Cluster 2 — PA Fan Performance — tag mapping + relationship config
+# Source: backend/clusters/docs/Cluster_2_PA_Fan_Performance_Technical_Note Final.docx
+# =============================================================================
+# This config is consumed by:
+#   - shared/feature_extraction.py's build_feature_view()   (raw tag -> column,
+#     via clusters/cluster2_features.py's build_cluster2_view())
+#   - clusters/cluster2_baseline.py                          (STEADY-state,
+#     running-only, Flow-binned expected value + normal band per fan/metric)
+#   - clusters/cluster2_validator.py                         (per-row residual
+#     + status: consistent / outlier / ambiguous / unknown)
+#
+# Kept separate from backend/engine/ and backend/config/ — no live module's
+# dashboard reads this file. Standalone, offline pipeline only, same as
+# Cluster 1 (see clusters/cluster_config.yaml).
+# =============================================================================
+
+cluster_id: cluster_2_pa_fan_performance
+timestamp_column: "Timestamp"
+
+# -----------------------------------------------------------------------------
+# Members (doc Table 1: Scope and Variables) — raw-tag mapping, same
+# status/aggregation vocabulary as shared/feature_extraction.build_feature_view().
+# -----------------------------------------------------------------------------
+members:
+
+  LOAD:
+    status: available
+    raw_tags: ["Load"]
+    aggregation: single
+    unit: "% MCR"
+
+  STEAM_FLOW_A:
+    status: available
+    raw_tags: ["STEAM FLOW-A (MS FLOW)"]
+    aggregation: single
+    unit: TPH
+
+  STEAM_FLOW_B:
+    status: available
+    raw_tags: ["STEAM FLOW -B (MS FLOW)"]
+    aggregation: single
+    unit: TPH
+
+  # ---- PA Fan Head: CONFIRMED BLOCKED (Step 0 finding, 2026-08-11) ----
+  # No "PA Fan A Head" / "PA Fan B Head" tag exists anywhere in the raw
+  # historian. Exactly ONE PA-side pressure tag exists at all ("PA PR TO
+  # HGG"), and it is a byte-identical duplicate of "PA PR TO APH (A)" --
+  # the same physical tap logged twice under two names, not two real
+  # readings -- confirmed via pandas .equals() over all 91,767 rows. No
+  # "(B)" counterpart exists (unlike SA, which genuinely has both
+  # "SA PR TO APH(A)" and "SA PR TO APH(B)").
+  #
+  # DECISION (user, 2026-08-11): Head is dropped from all three relationship
+  # formulas below (Fan RPM/IGV/Current = f(Fan Flow, Fan Head, Steam Flow)
+  # per doc Table 3, reduced to f(Fan Flow) here -- see each relationship's
+  # `stratify_by` list). This is a config-driven decision: once a real
+  # per-fan Head tag is confirmed (including the PA_PR_AIR_BOX_A/B candidate
+  # below, pending Punarbasu sign-off that it is a valid Head substitute —
+  # it's a DIFFERENT physical point, downstream at the windbox, not fan
+  # discharge), add PA_FAN_A_HEAD/PA_FAN_B_HEAD members below with
+  # status: available and add "HEAD" to the relevant relationships'
+  # `stratify_by` lists. cluster2_baseline.py bins generically over whatever
+  # `stratify_by` lists (N-dimensional, not hardcoded to Flow-only) — no
+  # baseline/validator code change should be needed beyond the config edit.
+  PA_FAN_A_HEAD:
+    status: synthetic_needed
+    reason: "No real per-fan Head tag exists -- see decision note above."
+  PA_FAN_B_HEAD:
+    status: synthetic_needed
+    reason: "Same as PA_FAN_A_HEAD."
+
+  # Candidate Head substitute, NOT wired into any relationship below --
+  # extracted here purely as reference/diagnostic data for the report
+  # (correlation against RPM/Current, to inform a future Punarbasu decision).
+  # Real, clean, zero-null tags, but measured downstream at the windbox
+  # (post-fan, post-ductwork), not at fan discharge -- and the A/B/C-to-
+  # fan-A/B correspondence is not confirmed. A third "C" tag exists with no
+  # obvious fan mapping at all.
+  # status: available here means the TAG ITSELF is real and reliably
+  # extracted (confirmed against the raw historian) -- NOT that its role as
+  # a Head substitute is confirmed. That role is still needs_verification,
+  # noted below and in the Step 0 decision above; these three are extracted
+  # purely as reference/diagnostic data for the report, not fed into any
+  # relationship's stratify_by.
+  PA_PR_AIR_BOX_A:
+    status: available
+    raw_tags: ["PA PR AT AIR BOX A"]
+    aggregation: single
+    unit: mmWC
+    role_status: needs_verification
+    note: "Tag extraction confirmed real; role as a Head substitute for Fan A is NOT confirmed -- reference-only, see PA_FAN_A_HEAD note."
+  PA_PR_AIR_BOX_B:
+    status: available
+    raw_tags: ["PA PR AT AIR BOX B"]
+    aggregation: single
+    unit: mmWC
+    role_status: needs_verification
+    note: "Tag extraction confirmed real; role as a Head substitute for Fan B is NOT confirmed -- reference-only, see PA_FAN_B_HEAD note."
+  PA_PR_AIR_BOX_C:
+    status: available
+    raw_tags: ["PA PR AT AIR BOX C"]
+    aggregation: single
+    unit: mmWC
+    role_status: needs_verification
+    note: "No confirmed fan-A/B correspondence at all -- extracted for descriptive completeness only, not used anywhere."
+
+  # PA Fan Flow -- available. Verified: (A1+A2)/2 + (B1+B2)/2 reconciles
+  # against Module 1's already-derived TOTAL_PA_FLOW to within mean 0.02 /
+  # max 0.39 (TPH) across all 91,767 rows -- same header-averaging
+  # derivation Module 1 already validated, just kept split by side here
+  # instead of summed.
+  PA_FAN_A_FLOW:
+    status: available
+    raw_tags: ["PA FLOW TO HGG -A (1)", "PA FLOW TO HGG -A (2)"]
+    aggregation: average
+    unit: TPH
+  PA_FAN_B_FLOW:
+    status: available
+    raw_tags: ["PA FLOW TO HGG -B (1)", "PA FLOW TO HGG -B (2)"]
+    aggregation: average
+    unit: TPH
+
+  PA_FAN_A_IGV_FB:
+    status: available
+    raw_tags: ["PA FAN A IGV FB"]
+    aggregation: single
+    unit: "%"
+  PA_FAN_B_IGV_FB:
+    status: available
+    raw_tags: ["PA FAN  B IGV FB"]  # NB: double space in the raw historian tag name, verified, not a typo
+    aggregation: single
+    unit: "%"
+    data_quality_note: >
+      6,900 nulls (7.5% of rows), a sustained gap 2024-01-18 to 2024-02-11
+      (~3.5 weeks). Confirmed a real missing-telemetry period, not Fan B
+      stopped (its RPM/current show continuous running through that
+      window) -- handled by the standard NaN/quality-exclusion path, not a
+      fan-configuration change.
+
+  PA_FAN_A_CURRENT:
+    status: available
+    raw_tags: ["PA FAN A VFD CURRENT"]
+    aggregation: single
+    unit: A
+  PA_FAN_B_CURRENT:
+    status: available
+    raw_tags: ["PA FAN B VFD CURRENT"]
+    aggregation: single
+    unit: A
+
+  PA_FAN_A_RPM:
+    status: available
+    raw_tags: ["PA FAN A RPM"]
+    aggregation: single
+    unit: RPM
+  PA_FAN_B_RPM:
+    status: available
+    raw_tags: ["PA FAN B RPM"]
+    aggregation: single
+    unit: RPM
+
+# -----------------------------------------------------------------------------
+# Fan running/stopped status -- no dedicated tag exists for either fan
+# (confirmed, Step 0). Derived from RPM, per the doc's own suggestion
+# ("Fan running condition can be determined from Fan Speed"). Threshold
+# chosen empirically: both fans' RPM distributions sit at 1085+ for 99.9%+
+# of the year, with a clean, wide gap down to two real exceptions (see
+# fan_configuration_mix below) -- 500 RPM sits cleanly in that gap.
+# -----------------------------------------------------------------------------
+fan_running:
+  rpm_threshold: 500.0
+  unit: RPM
+
+# -----------------------------------------------------------------------------
+# Fan configuration mix -- CHECKED EMPIRICALLY (Step 2 instruction), not
+# assumed. This plant runs BOTH PA fans essentially continuously through
+# 2024: 99.93%+ of rows have both fans' RPM above fan_running.rpm_threshold.
+# TWO exceptions exist, confirmed distinct in nature (checked at raw-tag
+# resolution, not assumed identical just because both trip the same guard):
+#   1. 2024-03-21, ~08:00-13:30 (widest window the 500 RPM guard trips
+#      across; the sharpest near-zero dip in current specifically is a
+#      narrower ~10:15-13:20 sub-window) -- Fan A's RPM/current/IGV all
+#      decay together while Fan B's RPM/current visibly RISE to compensate.
+#      Physically coherent single-fan-stop signature, a genuine operational
+#      event.
+#   2. 2024-02-11 13:25-13:30 (2 rows) -- BOTH fans' RPM/current drop
+#      together, immediately followed by a 25-minute historian sampling
+#      gap (13:35-13:55, already documented in
+#      shared/data_quality.py's KNOWN_BAD_TIMESTAMPS as a Steam Flow-B
+#      glitch coinciding with a broader logging hiccup at this exact
+#      timestamp), then both fans recover together at 14:00. Reads as a
+#      brief data-quality/logging dropout affecting both fans at once, not
+#      an operational fan-configuration change -- consistent with the
+#      already-known historian gap at this same moment, not a new finding
+#      about fan behavior.
+# Per-configuration baselines (Fan-A-only, Fan-B-only, changeover) are
+# therefore NOT built -- there is no meaningful training population for any
+# configuration other than "both running." Both events are excluded from
+# training (fan_running filter) and, where they fall in the scoring/test
+# window, show up as `unknown`/`ambiguous` in the validator rather than
+# being forced through a both-fans-running baseline they don't belong to.
+# -----------------------------------------------------------------------------
+fan_configuration_mix: both_running_only
+
+# -----------------------------------------------------------------------------
+# Relationships (doc Table 3 + section 3). Each predicts one fan variable
+# from a `stratify_by` list of input variables -- the baseline bins the
+# STEADY, running-only training data by these (N-dimensional, quantile-based
+# edges computed per column at build time; currently 1 dimension since Head
+# is dropped, but cluster2_baseline.py's binning is written generically over
+# the list so adding a 2nd dimension (Head) later is a config-only change).
+# `reference_only` variables are surfaced in the report/validator detail for
+# cross-checking but are NOT part of the band (doc: "a faulty load signal
+# should not automatically be interpreted as fan deterioration").
+# -----------------------------------------------------------------------------
+relationships:
+
+  fan_rpm:
+    doc_ref: "Table 3: Fan RPM = f(Fan Flow, Fan Head, Steam Flow) -- Head dropped, see PA_FAN_A_HEAD note"
+    predicts_suffix: RPM
+    stratify_by: [FLOW]
+    n_bins: 5
+    reference_only: [TOTAL_MAIN_STEAM_FLOW]
+    band_width_std: 2.0   # not numerically specified in the doc -- learned STEADY-state band used instead, same convention as Cluster 1
+
+  fan_igv:
+    doc_ref: "Table 3: Fan IGV = f(Fan Flow, Fan Head, Steam Flow) -- Head dropped"
+    predicts_suffix: IGV_FB
+    stratify_by: [FLOW]
+    n_bins: 5
+    reference_only: [TOTAL_MAIN_STEAM_FLOW]
+    band_width_std: 2.0
+
+  fan_current:
+    doc_ref: "Table 3: Fan Current = f(Fan Flow, Fan Head, Steam Flow) -- Head dropped"
+    predicts_suffix: CURRENT
+    stratify_by: [FLOW]
+    n_bins: 5
+    reference_only: [TOTAL_MAIN_STEAM_FLOW]
+    band_width_std: 2.0
+
+# -----------------------------------------------------------------------------
+# Calculated indicators (doc section, verbatim formulas -- used exactly,
+# not approximated). Predicted = the relevant relationship's baseline mean
+# at this row's Flow bin.
+# -----------------------------------------------------------------------------
+calculated_indicators:
+  current_deviation_pct: "(Actual Current - Predicted Current) / Predicted Current * 100"
+  rpm_deviation_pct: "(Actual RPM - Predicted RPM) / Predicted RPM * 100"
+  ab_current_imbalance_pct: "(Current_A - Current_B) / ((Current_A + Current_B) / 2) * 100"
+  ab_rpm_imbalance_pct: "(RPM_A - RPM_B) / ((RPM_A + RPM_B) / 2) * 100"
+
+# -----------------------------------------------------------------------------
+# A/B imbalance guard (doc: "meaningful only when both fans have comparable
+# duty and are in a comparable control state"). User-configurable, not a doc
+# number -- same treatment as Cluster 1's tolerances that weren't explicit
+# in its own doc.
+# -----------------------------------------------------------------------------
+ab_imbalance_guard:
+  comparable_duty_tolerance_pct: 15.0   # |FlowA - FlowB| / avg(FlowA, FlowB) * 100 must be <= this
+  both_fans_must_be_running: true
+  # IMPORTANT (found empirically, Step 3): A/B Current Imbalance is NOT
+  # centered at 0% in this real plant -- it sits at a stable ~-47.2%
+  # structural offset (IQR -47.5 to -46.8%, std 4.1% across the whole
+  # year) because Fan A and Fan B draw structurally different current at
+  # comparable duty/RPM (different motor/fan rating or CT scaling -- open
+  # item, see report). A fixed threshold around zero would flag ~100% of
+  # healthy rows as "outlier" by construction -- a false-alarm bug, not a
+  # real finding. Matches the doc's own Table 4 framing exactly ("A small
+  # and stable difference indicates normal unequal load sharing... A
+  # sudden increase or continuously rising difference may indicate a
+  # change") -- so both imbalance metrics get their OWN learned STEADY-
+  # state band (cluster2_baseline.py), same as every other relationship,
+  # and are scored against THAT band, not a fixed threshold at zero.
+  band_width_std: 2.0   # not a doc-specified number, same convention as the other relationships' band_width_std
+
+# -----------------------------------------------------------------------------
+# Persistence -- doc: "flagged when the relative difference exceeds a
+# user-defined limit for a specified persistence time" / "Alarm logic should
+# combine residual magnitude, persistence ... rather than trigger on a single
+# instantaneous excursion." User-configurable; this report evaluates each
+# row independently (no rolling-persistence state machine implemented this
+# phase -- same scope limitation as Cluster 1's report, noted there too).
+# -----------------------------------------------------------------------------
+persistence:
+  minutes: 15
+  note: "Not implemented in cluster2_validator.py this phase -- each row scored independently. See report's Known Limitations section."
+
+# -----------------------------------------------------------------------------
+# Baseline: STEADY-state AND fan-running only (Preparation for Training
+# Data; doc: "Remove bad-quality, frozen, missing, impossible,
+# maintenance-affected... periods," "Retain fan running/stopped status if
+# available; remove stopped-fan values from the running-performance model").
+# -----------------------------------------------------------------------------
+baseline:
+  mode_filter: STEADY
+  min_samples: 20

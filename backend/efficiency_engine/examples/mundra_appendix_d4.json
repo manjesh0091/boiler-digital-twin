@@ -1,0 +1,27 @@
+{
+  "fuel": {"name":"Mundra Appendix D-4 Coal","carbon_pct":40.05,"hydrogen_pct":2.8,"oxygen_pct":13.28,"nitrogen_pct":0.83,"sulfur_pct":0.43,"ash_pct":31.41,"moisture_pct":11.20,"hhv_kj_kg":15495.35,"volatile_matter_pct":24.9,"fixed_carbon_pct":30.20},
+  "refuse": {
+  "bed_ash_distribution_pct": 15,
+  "cyclone_ash_distribution_pct": 0,
+  "aph_ash_distribution_pct": 5,
+  "esp_ash_distribution_pct": 80,
+
+  "bed_ash_unburned_carbon_pct": 1.49,
+  "cyclone_ash_unburned_carbon_pct": 0.0,
+  "aph_ash_unburned_carbon_pct": 0.96,
+  "esp_ash_unburned_carbon_pct": 3.96,
+
+  "bed_ash_temperature_c": 800,
+  "cyclone_ash_temperature_c": 0,
+  "aph_ash_temperature_c": 173.57,
+  "esp_ash_temperature_c": 173.57
+},
+  "ambient": {"dry_bulb_c":25,"pressure_bar_a":0.9888,"relative_humidity_pct":36.42,"fuel_temp_c":39.1},
+  "gas": {"o2_economizer_outlet_dry_pct":2.85,"o2_air_heater_outlet_dry_pct":8.67,"flue_gas_specific_heat_cpg_btu_lbm_f": 0.264,"gas_temp_air_heater_inlet_c":314,"gas_temp_air_heater_outlet_c":173.57,"air_temp_air_heater_inlet_c":54.7,"air_temp_fan_inlet_c":59.41},
+  "enthalpy": {"reference_water_temperature_c": 25},
+  "assumptions": {"surface_radiation_loss_pct":0.31,"other_loss_pct":0,"auxiliary_power_credit_pct":0,"additional_moisture_kg_kg_fuel":0.0,"hydrogen_to_water_factor":8.937,"unburned_carbon_heating_value_kj_kg":33700,
+  "spent_sorbent_lbm_per_100_lbm_fuel": 0},
+  "boiler_duty": {"MAIN_STEAM_FLOW": 131.029,"MAIN_STEAM_PRESSURE": 51.08,"MAIN_STEAM_TEMPERATURE": 461.71,"FEEDWATER_FLOW": 132,"FW_PR_TO_FCS": 59.83,"FEEDWATER_TEMP_TO_FCS": 181.0},
+  "gcv_check": {"lower": 0.95,"upper": 1.04,"apply_correction": false}
+  
+}

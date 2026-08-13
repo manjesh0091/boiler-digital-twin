@@ -26,6 +26,10 @@ const DATA_SOURCE_LABEL = {
   simulated: "SIMULATED",
   partial: "PARTIAL",
   derived_estimate: "ESTIMATED",
+  static_config: "ASSUMED",
+  // Distinct from every state above: not a blocked/uncertain REAL value --
+  // there is no formula computing this at all (see decisions.md, Phase C).
+  unavailable_no_formula: "NO FORMULA",
 };
 
 export function DataSourceChip({ dataSource }) {

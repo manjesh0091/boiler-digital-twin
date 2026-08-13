@@ -10,6 +10,11 @@ export async function fetchState() {
   return data;
 }
 
+export async function fetchEfficiency() {
+  const { data } = await api.get("/efficiency");
+  return data;
+}
+
 export async function fetchScenarios() {
   const { data } = await api.get("/scenarios");
   return data;

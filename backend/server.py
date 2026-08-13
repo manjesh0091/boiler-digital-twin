@@ -44,6 +44,14 @@ async def get_state():
     return snap
 
 
+@api_router.get("/efficiency")
+async def get_efficiency():
+    snap = state_builder.efficiency_snapshot()
+    if not snap:
+        raise HTTPException(status_code=503, detail="State builder warming up")
+    return snap
+
+
 @api_router.get("/scenarios")
 async def get_scenarios():
     return {"scenarios": SCENARIOS, "active": state_builder.snapshot().get("scenario", "Normal Operation")}

@@ -6,6 +6,7 @@ import Landing from "@/pages/Landing";
 import ModuleSelect from "@/pages/ModuleSelect";
 import BoilerDashboard from "@/pages/BoilerDashboard";
 import CombustionMonitor from "@/pages/CombustionMonitor";
+import EfficiencyMonitor from "@/pages/EfficiencyMonitor";
 
 function App() {
   return (
@@ -20,9 +21,13 @@ function App() {
           <Route path="/modules/pai-s03" element={<ModuleLayout />}>
             <Route index element={<CombustionMonitor />} />
           </Route>
+          <Route path="/modules/pai-s02" element={<ModuleLayout />}>
+            <Route index element={<EfficiencyMonitor />} />
+          </Route>
           {/* Legacy deep-links */}
           <Route path="/pai-s01" element={<Navigate to="/modules/pai-s01" replace />} />
           <Route path="/pai-s03" element={<Navigate to="/modules/pai-s03" replace />} />
+          <Route path="/pai-s02" element={<Navigate to="/modules/pai-s02" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

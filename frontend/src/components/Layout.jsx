@@ -9,6 +9,7 @@ export const TelemetryContext = React.createContext(null);
 const MODULE_META = {
   "/modules/pai-s01": { id: "PAI-S01", name: "Boiler Operating Dashboard" },
   "/modules/pai-s03": { id: "PAI-S03", name: "Combustion Excess Air Monitor" },
+  "/modules/pai-s02": { id: "PAI-S02", name: "Boiler Efficiency Monitoring" },
 };
 
 export default function ModuleLayout() {
