@@ -409,6 +409,261 @@ why, during that window. Fixed by exposing `clearing` (true when
 labeling the card "clearing…" instead of leaving it looking identical to
 a genuine active breach.
 
+**43. Module 3's fuel Ultimate/Proximate Analysis, ash-split, and ambient
+conditions are now real static values from a plant engineering document
+(2026-08-13), resolving ask-list items #14/#16 and partially resolving
+#15.** `fuel.*` (9 fields + hhv_kj_kg), `refuse.*_distribution_pct`/
+`*_unburned_carbon_pct` (8 fields), and `ambient.*` (4 fields) are now
+`static_config`, sourced from `FUEL_ULTIMATE_PROXIMATE`/`REFUSE_ASH_SPLIT`/
+`AMBIENT_CONDITIONS` (`adapter.py`), tracked against a fixed
+`PLANT_ENGINEERING_DOC_DATE` constant (2026-08-13) rather than
+re-evaluating to "now" at every process start like `GCV_LAST_UPDATED` —
+these are periodic test-report values, not per-shift entries, so a fixed
+date is the correct model, not an approximation of one. Refuse ash
+*temperatures* (4 fields) were NOT part of this document and still use the
+reference-coal placeholder — item #15 is only partially closed, and the
+config/adapter comments say so explicitly rather than implying full
+resolution.
+
+`fuel.hhv_kj_kg` now uses this document's own value (14870 kJ/kg = 3551.6
+kcal/kg), NOT `GCV_KJ_PER_KG` (Module 1's separate COAL_GCV constant, 3610
+kcal/kg = 15114.3 kJ/kg, ~1.64% higher, different source document/date).
+Deliberately NOT reconciled — `GCV_KCAL_PER_KG` still feeds Gate 1's
+independent `eta_direct` Q_input, and collapsing both onto one document
+would remove Gate 1's independence between its two sides. Reconciling
+which GCV figure is authoritative is a new, separate ask (see
+consolidated_ask_list.md).
+
+Measured (2000-tick offline sweep, not assumed), two real, significant
+findings from wiring this in:
+- **GCV Check now fails, not passes.** Dulong HHV (computed from the real
+  C/H/O/S composition) = 3149.3 kcal/kg vs. this document's Measured HHV =
+  3551.6 kcal/kg → g_factor = 0.887, outside the [0.95, 1.04] band (spec-
+  given, decision 34). Since fuel.* is now a static value, this is not
+  noise — it is a deterministic, permanent WARN state at these exact
+  numbers, not an intermittent one. Not silently adjusted or hidden; this
+  is exactly the kind of discrepancy the GCV Check exists to catch, and it
+  now surfaces a genuine question worth the plant/document owner
+  double-checking (transcription error in one field, or a real
+  ultimate-analysis/HHV basis mismatch) — flagged to the user directly,
+  not resolved unilaterally.
+- **Mass Balance (Gate 1) discrepancy rate is 99.8%** (1331/1334 ok
+  ticks), up in visibility (not necessarily in kind) from before this
+  change. `eta_indirect` is now tight (87.52-87.66%, since fuel/refuse/
+  ambient are all static and don't vary tick-to-tick) while `eta_direct`
+  is highly volatile (37-92%), driven by real Fuel Flow tag noise against
+  a GCV constant that differs ~1.64% from fuel.hhv_kj_kg's new real value
+  (see above) — this was already eta_direct's character before this
+  change (composition never varied tick-to-tick under the placeholder
+  either), just now paired with a real, higher eta_indirect baseline
+  (~87.6% vs. ~85.3% before).
+
+**44. Module 3's 14 Logical Filtering & Validation Rules (plant
+engineering document, 2026-08-13) are implemented as: rules 1-2 as real
+BLOCKING gates (their spec'd action is "do not proceed"), rule 3 as a
+cross-reference to the already-existing GCV Check mechanism (not
+recomputed), and rules 4-14 as advisory checks in
+`result["validation_checks"]` — same Gate-style pattern as Phase A's Gates
+1-3.** Implementation notes, rule by rule:
+- **Rules 1 (mass closure, ±0.5%) and 2 (ash-split=100% exactly)** —
+  blocking, evaluated in `run_efficiency()` before the library is even
+  called, reusing the same `check_mass_closure()`/`check_ash_split_closure()`
+  functions the advisory list also includes (one implementation, not
+  duplicated between the blocking and advisory paths). Both pass with
+  current real data (100.01%, 100.000%).
+- **Rule 2's stated alternative action ("normalize proportionally")** —
+  deliberately NOT implemented; only "flag data-entry error" is. Silently
+  renormalizing real plant data would fabricate a number, against this
+  project's standing discipline (decision 12).
+- **Rule 3 (GCV cross-check band)** — no new code; this IS Phase A Gate 2 /
+  the library's own GCV Check. Cross-referenced from `gcv_check.values`
+  after the library runs.
+- **Rule 4 (O2 rise across air heater)** — computed, but always returns
+  `"not_checkable"`: the AH-outlet O2 side is still the library's
+  placeholder (no real sensor, ask-list item #4), so the rise figure
+  (currently +5.86pp in testing) isn't yet trustworthy. Computed value
+  shown in the message for transparency, not hidden.
+- **Rule 5 (monotonic flue-gas temperature)** — only 3 of the spec's 7
+  chain points have a confirmed real tag (Economizer Inlet/Outlet, Stack;
+  Furnace/SH/APH-outlet/ESP-outlet do not, ask-list item #3) — checks that
+  3-point subset only, explicitly named as a subset in the check's own
+  message, not silently treated as the full chain.
+- **Rule 6 (A/B instrument deviation, 5% tolerance)** — needed raw A/B
+  pairs Module 1 already averages away. Steam Flow A/B reused from
+  Cluster 1's existing `self._cluster_view` (no duplicate extraction);
+  SH-3 Pressure/Temp A/B and O2 LHS/RHS needed 6 new raw-tag entries added
+  to `hindalco_boiler9_pai_s02_v1.yaml`'s `parameters:` block
+  (`SH3_PRESSURE_A/B`, `SH3_TEMP_A/B`, `O2_LHS/RHS`) — same raw tags
+  Module 1 already reads for `MAIN_STEAM_PRESSURE`/`MAIN_STEAM_TEMPERATURE`/
+  `FLUE_GAS_O2_APH_INLET`, kept separate here purely for this check; the
+  efficiency calc itself is unaffected, still uses Module 1's real
+  averages. First real-data test found O2 LHS/RHS at 8.64% deviation
+  (above the 5% tolerance) — ask-list item #36.
+- **Rule 7 (steam/feedwater mass balance, 3-5% tolerance, using the
+  lenient 5% bound since the doc gives a range not a number)** — no
+  Blowdown/Spray Water Flow term (neither has a real tag), same
+  already-documented gap as Cluster 1's own Water-Steam Balance check
+  (decisions.md #21). First real-data test: +6.28% deviation (feedwater
+  reads higher) — this independently reproduces Cluster 1's own earlier
+  finding (ask-list item #29: feedwater consistently reads 3-6.5% higher
+  than steam flow) from a completely different code path. Not a new ask —
+  cross-confirms an existing one.
+- **Rule 8 (bed-ash temperature sanity)** — always returns
+  `"not_checkable"`: `bed_ash_temperature_c` is still the reference-coal
+  placeholder (800C), which matches NEITHER the in-bed (850-950C) nor
+  post-cooler (150-250C) range — ash temperatures were not part of the
+  2026-08-13 document (ask-list item #15).
+- **Rule 9 (UBC order-of-magnitude, Bed > ESP > Cyclone > APH)** — passes
+  with real data (6.4 > 2.31 > 0.3 > 0), confirming the document's own
+  claimed consistency rather than assuming it.
+- **Rule 10 (ambient data currency)** — always returns `"not_checkable"`;
+  fundamentally not programmatically verifiable with this system's data
+  shape (no distinct test-window timestamp separate from the document's
+  own date). A flag for manual confirmation, not a gate — ask-list item #34.
+- **Rule 11 (fixed-constant lock)** — reads the ACTUAL
+  `EfficiencyAssumptions` dataclass instance's field values, not the raw
+  (deliberately empty) `assumptions_kwargs` dict `build_inputs()` passes to
+  it (that dict only carries `data_source` tags, relying entirely on the
+  library's own dataclass defaults for the values themselves — a real bug
+  caught during testing, fixed by capturing the instantiated
+  `EfficiencyAssumptions()` object and reading its fields instead of
+  reaching into the empty kwargs dict). Passes: both constants match ASME
+  PTC 4.1 exactly (8.937, 33700.0).
+- **Rule 12 (spent sorbent verification)** — always returns
+  `"not_checkable"` while the value is 0: we don't yet know whether this
+  CFBC unit has active sorbent injection. Ask-list item #35.
+- **Rule 13 (steam design-limit check, ≤92 kg/cm2(a), ≤540C)** — passes
+  temperature, but a first real-data spot-check found pressure at 93.7
+  kg/cm2(a), above the 92 limit. Worth confirming whether 92 is the
+  correct operating ceiling (Module 1's own `DESIGN_STEAM_PARAMETERS`
+  lists 90.2 kg/cm2 as nominal/rated design pressure, a different concept)
+  — ask-list item #37.
+- **Rule 14 (load stability, ±2% over 30-60 min)** — reuses Module 1's own
+  `self._param_runtime["steam_flow"].history` directly (no duplicate
+  tracker); uses the 12-row/60-min end of the stated 30-60 min range, same
+  convention as `TRAINING_STALE_STREAK_ROWS`. Passes with real data (1.60%
+  max deviation over the window).
+
+**45. Full-test-window sweep (73,427 rows) of Rules 6 (O2 LHS/RHS) and 13
+(Main Steam Pressure ceiling) — both findings are real, but neither is
+what the single-tick spot-check alone suggested.**
+- **O2 LHS/RHS (Rule 6): exceeds 5% on 56.94% of ticks** (41,608/73,069) —
+  far more than "one data point." But the relative-percentage framing
+  overstates it: median ABSOLUTE difference is only 0.23pp, mean 0.49pp —
+  the two probes usually sit within a quarter-point of each other. Most of
+  the extreme tail (dev% > 100%) comes from a percentage-of-small-number
+  artifact — when average O2 is 1-2%, a small absolute gap produces a
+  triple-digit relative percentage (mean 144%, median 200% in that bucket)
+  by arithmetic alone, not a worse physical fault. On top of that,
+  there IS a real, persistent, directional bias: RHS reads ~0.40pp higher
+  than LHS on average all year (LHS > RHS only 17% of the time) — a
+  genuine calibration offset, same character as the PA/SA Fan Current A/B
+  offsets already found in Clusters 2/4 (decision 13), not noise. September
+  2024 is a distinct outlier within this (97.6% exceedance vs. 30-60% other
+  months, offset ~0.93pp vs. ~0.40pp typical) — checked for stuck/frozen
+  values (none found, all readings unique that month), so this looks like a
+  genuine period-specific calibration drift, not a data artifact. Ask-list
+  item #36 updated with these numbers.
+- **Main Steam Pressure (Rule 13): exceeds 92 kg/cm2(a) on only 2.18% of
+  ticks** (1,598/73,427) — a rare excursion, not routine operation, matching
+  the single-tick spot-check's implication. But 2.18% overall hides a sharp
+  concentration: **January 2024 alone is 24.5%** (3,225 rows); every other
+  month is under 6%, most under 1%, December is exactly 0% (max 91.78,
+  never reaching 92 all month). This reads as a real, period-specific
+  event in January 2024, not a chronic condition.
+- **92 vs. 90.2 kg/cm2 reconciliation — evidence gathered, not resolved.**
+  Checked whether anything in the repo clarifies the relationship: nothing
+  does (`DESIGN_STEAM_PARAMETERS`'s own value has no elaboration beyond the
+  bare number). Indirect evidence from the sweep leans toward "92 is a real
+  operating ceiling with margin above a 90.2 nominal/target, not a
+  duplicate of the same limit": mean operating pressure is 88.77 (below
+  both), but 17.32% of ticks already exceed 90.2 in apparently normal
+  operation — if 90.2 were the actual hard ceiling, that would mean the
+  plant routinely runs "over design" one row in six, which is a less
+  physically plausible reading than 90.2 being a nominal/target point with
+  92 as the real mechanical/instrumentation ceiling above it. Suggestive,
+  not conclusive — still requires the plant/document owner to confirm,
+  ask-list item #37 updated with this reasoning rather than left as a bare
+  open question.
+
+**46. Module 3's Rule 6 uses an ABSOLUTE tolerance (0.85pp) for O2
+LHS/RHS specifically, not the Logical Filtering & Validation Rules
+document's relative 5% — the other 3 A/B pairs (Steam Flow, SH-3
+Pressure, SH-3 Temp) are unaffected.** Decision 45's full sweep found the
+document's uniform relative-5% formula flagged 56.94% of ticks for O2
+LHS/RHS, mostly a percentage-of-small-number artifact (O2 typically reads
+3-5%, so a small absolute gap reads as a large relative percentage;
+median absolute gap was only 0.23pp) — same class of problem decision 10
+already fixed for Drum Level/Furnace Draft with z-score/absolute-
+deviation zoning instead of %-deviation, and consistent with how O2
+analyzer accuracy is conventionally specified in industry (absolute %O2,
+not %-of-reading). The switch is scoped to O2 LHS/RHS only — the other 3
+pairs operate at levels (100+ TPH, 90+ kg/cm2, 500+ C) where relative
+framing doesn't have this problem, and the document's own 5% figure is
+kept for them.
+
+The tolerance value (0.85pp) is the p90 of the observed absolute gap from
+the same sweep — a data-derived CANDIDATE, not a number either source
+document states. Tagged `status: configurable_pending_confirmation`
+(`hindalco_boiler9_pai_s02_v1.yaml` `scoring.o2_ab_absolute_tolerance_pp`)
+— a new status value, same spirit as `needs_verification` on the DGL/Fly-
+Ash setpoints (decision 34): a real working default, not silently
+treated as final.
+
+Re-swept the full 73,427-row test window through the actual production
+`check_ab_deviation()` function (not a parallel calculation) after the
+switch: exceedance drops from 56.94% to **9.91%** (7,241/73,069 valid
+rows) — expected, since the tolerance was set at the observed p90 by
+construction. This does not resolve the underlying finding from decision
+45 (the persistent ~0.40pp RHS-higher-than-LHS offset, the September 2024
+anomaly) — those are unchanged facts about the sensors; only the
+tolerance formula changed, not the data. The calibration question itself
+is tracked separately, ask-list item #38, deliberately worded as "worth a
+calibration check, not confirmed as expected or as a fault" — not
+resolved either direction, since a benign explanation (different physical
+sample-point locations) hasn't been ruled out from data alone.
+
+**47. Module 3's `data_source` vocabulary gains a new value, `"documented"`,
+distinct from `"static_config"`.** Before this, every plant-engineering-
+document-sourced field (fuel.*, refuse.*_distribution_pct/
+_unburned_carbon_pct, ambient.*, gcv_check.*, all wired in decision 43) and
+every genuine Awes/library engineering default with no plant-specific
+override (assumptions.*, enthalpy.reference_water_temperature_c,
+gas.flue_gas_specific_heat_cpg_btu_lbm_f) both got tagged `"static_config"`
+and rendered as an identical grey "ASSUMED" chip — a reader couldn't tell
+"a confirmed plant number" apart from "a generic placeholder pending
+confirmation" at a glance. `"documented"` now covers only the former;
+`"static_config"`/"ASSUMED" is reserved for the latter. `DataSourceChip`
+(`StatusChips.jsx`) renders `"documented"` as a green "DOCUMENTED" chip,
+visually distinct from every other (grey) chip — the one existing status
+whose color changed is `"documented"` itself; every chip that existed
+before this decision renders identically to before, no regression risk.
+Refuse ash *temperatures* (still placeholder, not part of the 2026-08-13
+document) correctly stay `"simulated"`, unaffected by this change.
+
+**48. The Daily/Shift Summary Table's GCV column was showing Module 1's
+separate `COAL_GCV` constant (3610 kcal/kg) instead of the GCV that
+actually drives every other column in that same row — confirmed as an
+oversight, not the same deliberate independence Gate 1 uses, and fixed.**
+Investigated rather than assumed either way: the Shift Summary Table
+(Phase D) was built before decision 43's real-fuel-data wiring existed, so
+`GCV_KCAL_PER_KG` was literally the only GCV constant available at the
+time — it was never revisited once `fuel.hhv_kj_kg`'s real value landed.
+This is a different situation from Gate 1's mass-balance cross-check
+(decision 43), which deliberately keeps `GCV_KCAL_PER_KG` independent from
+`fuel.hhv_kj_kg` so the two sides of that specific comparison don't
+silently converge — the shift table has no such cross-check purpose, it's
+a plain summary column, and showing an unrelated constant next to
+`avg_eta_pct`/`avg_dgl_pct` (which ARE driven by `fuel.hhv_kj_kg`) was
+simply inconsistent. Fixed: added `FUEL_HHV_KCAL_KG` (`fuel.hhv_kj_kg` in
+kcal/kg form) to `adapter.py`, `state_builder.py`'s shift accumulator now
+sums this instead of `GCV_KCAL_PER_KG` (now unused in that file, removed
+from its import). Column now reads 3552 kcal/kg, matching the GCV Check
+card's own "Measured HHV" figure, instead of an unrelated 3610. Frontend
+footnote added (same pattern as the existing "FA Carbon" footnote)
+explicitly naming which GCV source the column uses and why it differs
+from Gate 1's Mass Balance card.
+
 ## Process decisions
 
 **26. Clusters are built standalone first (config -> baseline -> validator

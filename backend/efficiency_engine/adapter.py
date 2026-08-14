@@ -19,14 +19,19 @@ tick. Fixed by having state_builder.py resolve every shared tag ONCE
 (PAI-S01's scoring + any active scenario's effect) and pass the resolved
 value + its data_source in, rather than this module re-reading anything raw.
 
-Every blocked/placeholder field is drawn from the library's own bundled
-ASME Appendix D-4 reference coal
+As of 2026-08-13, fuel.* (Ultimate + Proximate Analysis), refuse.*
+ash-split (distribution/unburned-carbon, NOT temperatures), and ambient.*
+are real static values from a plant engineering document (data_source
+"static_config", see PLANT_ENGINEERING_DOC_DATE below) -- no longer the
+library's bundled placeholder. Every STILL-blocked field (refuse.*
+ash temperatures, gas.* air-heater tags, etc.) continues to draw from the
+library's own bundled ASME Appendix D-4 reference coal
 (efficiency_engine/examples/mundra_appendix_d4.json) -- a self-consistent,
 already-validated composition (see tests/test_appendix_d4.py), NOT a guess
-and NOT this plant's actual coal. Each placeholder's data_source is tagged
-"simulated" (never "real") in run_efficiency()'s returned data_source map,
-so a consumer can never mistake it for a measured value -- same discipline
-as Module 1/2's data_source convention.
+and NOT this plant's actual coal. Each still-blocked field's data_source is
+tagged "simulated" (never "real") in run_efficiency()'s returned
+data_source map, so a consumer can never mistake it for a measured value --
+same discipline as Module 1/2's data_source convention.
 """
 from __future__ import annotations
 
@@ -54,9 +59,12 @@ _REFERENCE_COAL_PATH = Path(__file__).parent / "examples" / "mundra_appendix_d4.
 _REFERENCE_COAL: dict[str, Any] = json.loads(_REFERENCE_COAL_PATH.read_text())
 
 # config/hindalco_boiler9_pai_s01_v2.yaml COAL_GCV -- real plant value,
-# Proximate Analysis basis. Only real fuel constant in the repo (see
-# hindalco_boiler9_pai_s02_v1.yaml fuel.* block for the full correction note
-# on why oxygen_pct/nitrogen_pct/sulfur_pct are NOT similarly available).
+# Proximate Analysis basis, used ONLY for Gate 1's independent eta_direct
+# Q_input (compute_eta_direct_pct() below) -- deliberately NOT reconciled
+# with fuel.hhv_kj_kg's own, separately-sourced value below (~1.6% apart;
+# see FUEL_ULTIMATE_PROXIMATE's docstring note) so Gate 1 keeps an
+# independent GCV source on each side of its cross-check, not the same
+# document feeding both.
 GCV_KCAL_PER_KG = 3610.0
 GCV_KJ_PER_KG = GCV_KCAL_PER_KG * 4.1868
 
@@ -70,6 +78,493 @@ REFERENCE_WATER_TEMP_C = 25.0
 # band without duplicating the numbers.
 GCV_CHECK_LOWER = 0.95
 GCV_CHECK_UPPER = 1.04
+
+# ---- RESOLVED 2026-08-13 (ask-list items #14/#15/#16): real static values
+# from a plant engineering document (fuel ultimate/proximate analysis
+# report), superseding the library's bundled Appendix D-4 reference-coal
+# placeholder for these three blocks. See
+# hindalco_boiler9_pai_s02_v1.yaml's fuel.*/refuse.*/ambient.* sections for
+# the full per-field sourcing notes (including the fuel.hhv_kj_kg vs.
+# GCV_KCAL_PER_KG discrepancy note above).
+#
+# Unlike GCV_LAST_UPDATED below (which re-evaluates to "now" every process
+# start, an acknowledged placeholder for a real per-shift lab-entry
+# mechanism that doesn't exist yet -- decisions.md #30), this is a fixed
+# date: these are periodic test-report values, not per-shift entries, so
+# "now" at every restart would be actively wrong, not just imprecise.
+# Update PLANT_ENGINEERING_DOC_DATE by hand when the plant supplies a new
+# test report. ----
+PLANT_ENGINEERING_DOC_DATE: datetime = datetime(2026, 8, 13, tzinfo=timezone.utc)
+
+
+def plant_doc_age_days(now: datetime | None = None) -> float:
+    now = now or datetime.now(timezone.utc)
+    return (now - PLANT_ENGINEERING_DOC_DATE).total_seconds() / 86400.0
+
+
+# Ultimate + Proximate Analysis (fuel.* in the config). Ultimate-analysis
+# closure (C+H+O+N+S+ash+moisture) = 100.01%, well inside the library's own
+# validate_fuel() tolerance (raises past 1.0%, warns past 0.1%). VM+FC+ash+
+# moisture sums to 106.0%, not 100% -- proximate analyses are commonly
+# reported on a different moisture basis than the ultimate analysis in real
+# lab reports, and the library doesn't validate this pair at all, so this
+# isn't a blocking concern -- noted for transparency only.
+FUEL_ULTIMATE_PROXIMATE = {
+    "carbon_pct": 36.13,
+    "hydrogen_pct": 2.05,
+    "oxygen_pct": 11.32,
+    "nitrogen_pct": 0.89,
+    "sulfur_pct": 0.5,
+    "ash_pct": 36.81,
+    "moisture_pct": 12.31,
+    "volatile_matter_pct": 26.4,
+    "fixed_carbon_pct": 30.48,
+}
+FUEL_HHV_KJ_KG = 14870.0
+# kcal/kg form -- the actual GCV feeding every efficiency figure Awes's
+# library computes (eta_indirect, all loss terms), unlike GCV_KCAL_PER_KG
+# above (Gate 1's deliberately-independent Q_input source, never used
+# inside the library itself). Any display meant to represent "the GCV
+# behind these efficiency numbers" should use THIS constant, not
+# GCV_KCAL_PER_KG.
+FUEL_HHV_KCAL_KG = FUEL_HHV_KJ_KG / 4.1868
+
+# Ash split (refuse.* distribution_pct + unburned_carbon_pct only --
+# temperatures are still NOT in this document, see config note). Bed +
+# cyclone + APH + ESP distribution sums to exactly 100%, the library's own
+# hard requirement.
+REFUSE_ASH_SPLIT = {
+    "bed_ash_distribution_pct": 10.0,
+    "cyclone_ash_distribution_pct": 40.0,
+    "aph_ash_distribution_pct": 0.0,
+    "esp_ash_distribution_pct": 50.0,
+    "bed_ash_unburned_carbon_pct": 6.4,
+    "cyclone_ash_unburned_carbon_pct": 0.3,
+    "aph_ash_unburned_carbon_pct": 0.0,
+    "esp_ash_unburned_carbon_pct": 2.31,
+}
+
+# ambient.* -- static design-basis figures, not a live tag (still not in
+# the historian export).
+AMBIENT_CONDITIONS = {
+    "dry_bulb_c": 37.8,
+    "pressure_bar_a": 0.9888,
+    "relative_humidity_pct": 46.61,
+    "fuel_temp_c": 37.8,
+}
+
+# =============================================================================
+# Logical Filtering & Validation Rules (plant engineering document,
+# 2026-08-13) -- 14 rules applied before/alongside feeding values into the
+# efficiency calculation engine. Same Gate-style pattern as Phase A's Gates
+# 1-3: rules 1 and 2 are real BLOCKING gates (their spec'd action is "do not
+# proceed" / normalize-or-flag a data-entry error) evaluated in
+# run_efficiency() before the library is even called; every other rule is
+# advisory, returned in result["validation_checks"] without blocking
+# anything. Rule 3 is not implemented here at all -- it IS the existing GCV
+# Check mechanism (gcv_check.values, Phase A Gate 2's sibling), cross-
+# referenced from the library's own output rather than recomputed.
+#
+# Several rules can only run against CURRENTLY-PLACEHOLDER inputs (rule 4's
+# AH-outlet O2, rule 8's bed-ash temperature) or a structurally-incomplete
+# subset of what the rule literally asks for (rule 5's gas-path chain --
+# furnace/SH/APH-outlet/ESP-outlet gas temps have no confirmed real tag).
+# These return status "not_checkable" rather than a fabricated pass/fail,
+# with the specific gap named in the message -- never silently treated as
+# passing. Rule 10 (ambient data currency) is not programmatically
+# checkable at all with this system's current data shape (no distinct
+# "test window timestamp" separate from the document's own date) and always
+# returns "not_checkable" -- a flag for manual confirmation, not a gate.
+# =============================================================================
+
+RULE_MASS_CLOSURE_TOLERANCE_PCT = 0.5
+RULE_ASH_SPLIT_EPSILON_PCT = 0.01
+RULE_O2_RISE_TYPICAL_MIN_PP = 0.3
+RULE_O2_RISE_TYPICAL_MAX_PP = 1.5
+RULE_O2_RISE_FLAG_PP = 2.0
+RULE_AB_DEVIATION_MAX_PCT = 5.0
+# Rule 7's own doc text says "within +/- 3-5%", a range not a single number
+# -- using the lenient/outer bound (5%) as the hard tolerance so this
+# doesn't false-flag on the low end of the stated range; the ambiguity is
+# named in the check's own message, not silently resolved.
+RULE_FEEDWATER_STEAM_BALANCE_TOLERANCE_PCT = 5.0
+RULE_BED_ASH_INBED_RANGE_C = (850.0, 950.0)
+RULE_BED_ASH_POSTCOOLER_RANGE_C = (150.0, 250.0)
+RULE_ASME_HYDROGEN_TO_WATER_FACTOR = 8.937
+RULE_ASME_UBC_HEATING_VALUE_KJ_KG = 33700.0
+RULE_MAIN_STEAM_PRESSURE_MAX_KG_CM2 = 92.0
+RULE_MAIN_STEAM_TEMPERATURE_MAX_C = 540.0
+RULE_LOAD_STABILITY_TOLERANCE_PCT = 2.0
+# Rule 14's doc text says "30-60 minutes" -- using the stricter/longer end
+# (60 min = 12 rows at this dataset's 5-min interval), same convention this
+# project already uses for TRAINING_STALE_STREAK_ROWS (shared/data_quality.py).
+RULE_LOAD_STABILITY_WINDOW_ROWS = 12
+
+
+def check_mass_closure(fuel_kwargs: dict[str, Any]) -> dict[str, Any]:
+    total = sum(fuel_kwargs[k] for k in (
+        "carbon_pct", "hydrogen_pct", "oxygen_pct", "nitrogen_pct",
+        "sulfur_pct", "ash_pct", "moisture_pct",
+    ))
+    error = total - 100.0
+    ok = abs(error) <= RULE_MASS_CLOSURE_TOLERANCE_PCT
+    return {
+        "rule": 1, "name": "Ultimate + Proximate mass closure",
+        "status": "pass" if ok else "fail",
+        "message": (
+            f"C+H+O+N+S+Ash+Moisture = {total:.2f}% "
+            f"(tolerance 100% +/-{RULE_MASS_CLOSURE_TOLERANCE_PCT}%)"
+            + ("" if ok else " -- OUT OF TOLERANCE, request a corrected lab sheet, do not proceed.")
+        ),
+        "applies_to": "fuel.*",
+    }
+
+
+def check_ash_split_closure(refuse_kwargs: dict[str, Any]) -> dict[str, Any]:
+    total = sum(refuse_kwargs[k] for k in (
+        "bed_ash_distribution_pct", "cyclone_ash_distribution_pct",
+        "aph_ash_distribution_pct", "esp_ash_distribution_pct",
+    ))
+    ok = abs(total - 100.0) <= RULE_ASH_SPLIT_EPSILON_PCT
+    return {
+        "rule": 2, "name": "Ash-split closure",
+        "status": "pass" if ok else "fail",
+        "message": (
+            f"bed+cyclone+APH+ESP distribution = {total:.3f}% (must be exactly 100%)"
+            + ("" if ok else " -- data-entry error, not auto-normalized.")
+        ),
+        "applies_to": "refuse.*_distribution_pct",
+    }
+
+
+def check_o2_rise_across_aph(o2_econ: float, o2_aph: float, o2_aph_is_real: bool) -> dict[str, Any]:
+    rise = o2_aph - o2_econ
+    if rise < 0:
+        status, msg = "fail", f"O2 rise across air heater is {rise:+.2f}pp (negative) -- sensor/data error."
+    elif rise > RULE_O2_RISE_FLAG_PP:
+        status, msg = "warn", f"O2 rise across air heater is {rise:+.2f}pp (>2pp) -- possible excessive APH air in-leakage, flag for inspection."
+    else:
+        typical = RULE_O2_RISE_TYPICAL_MIN_PP <= rise <= RULE_O2_RISE_TYPICAL_MAX_PP
+        status = "pass"
+        msg = f"O2 rise across air heater is {rise:+.2f}pp ({'within' if typical else 'below/above but under the 2pp flag threshold of'} typical 0.3-1.5pp)."
+    if not o2_aph_is_real:
+        status = "not_checkable"
+        msg += (" NOTE: O2 at the air-heater outlet is still the library's placeholder "
+                "(no real sensor exists downstream of the air heater -- ask-list item #4), "
+                "so this rise figure is not yet trustworthy.")
+    return {
+        "rule": 4, "name": "O2 rise across air heater (in-leakage)",
+        "status": status, "message": msg,
+        "applies_to": "gas.o2_economizer_outlet_dry_pct, gas.o2_air_heater_outlet_dry_pct",
+    }
+
+
+def check_monotonic_gas_temp(
+    econ_inlet: float | None, econ_outlet: float | None, stack: float | None
+) -> dict[str, Any]:
+    chain = [("Economizer Inlet", econ_inlet), ("Economizer Outlet (APH Inlet)", econ_outlet), ("Stack", stack)]
+    present = [(n, v) for n, v in chain if v is not None]
+    base_note = (
+        "Checked subset only -- Furnace, SH, APH Outlet, and ESP Outlet gas "
+        "temperatures have no confirmed real tag (ask-list item #3): "
+    )
+    if len(present) < 2:
+        return {
+            "rule": 5, "name": "Monotonic flue-gas temperature",
+            "status": "not_checkable",
+            "message": base_note + "insufficient real gas-path readings this tick.",
+            "applies_to": "gas.gas_temp_*, all FG TEMP tags",
+        }
+    violations = [
+        f"{present[i][0]} ({present[i][1]:.1f}C) <= {present[i + 1][0]} ({present[i + 1][1]:.1f}C)"
+        for i in range(len(present) - 1) if present[i][1] <= present[i + 1][1]
+    ]
+    ok = not violations
+    chain_str = " > ".join(f"{n} {v:.1f}C" for n, v in present)
+    return {
+        "rule": 5, "name": "Monotonic flue-gas temperature",
+        "status": "pass" if ok else "fail",
+        "message": base_note + chain_str + (
+            ". OK." if ok else ". Reversal(s) -- re-verify tag mapping/transmitter: " + "; ".join(violations)
+        ),
+        "applies_to": "gas.gas_temp_*, all FG TEMP tags",
+    }
+
+
+# O2 LHS/RHS: absolute tolerance instead of the document's relative 5%,
+# per user's explicit direction (2026-08-13). The two O2 probes read a
+# small-magnitude quantity (typically 3-5%), so a small absolute gap
+# balloons into a large relative percentage -- confirmed via a full
+# 73,427-row sweep: 56.94% of ticks exceeded the 5% relative tolerance,
+# but the median ABSOLUTE gap was only 0.23pp. Same class of problem
+# decision 10 already fixed for Drum Level/Furnace Draft with z-score/
+# absolute-deviation zoning instead of %-deviation. Also matches how O2
+# analyzer accuracy is conventionally specified in industry (absolute
+# %O2, not %-of-reading).
+#
+# Value (0.85pp) is the observed p90 absolute gap from that same sweep --
+# a data-derived CANDIDATE, not a number either source document states.
+# status: configurable_pending_confirmation in
+# hindalco_boiler9_pai_s02_v1.yaml scoring.* -- same treatment as the
+# DGL/Fly-Ash setpoints (needs_verification), not silently final. The
+# other 3 A/B pairs (Steam Flow, SH-3 Pressure, SH-3 Temp) stay on the
+# document's relative 5% -- they operate at high-enough levels (100+ TPH,
+# 90+ kg/cm2, 500+ C) that relative framing doesn't have O2's
+# small-denominator problem.
+RULE_O2_AB_ABSOLUTE_TOLERANCE_PP = 0.85
+RULE_AB_ABSOLUTE_TOLERANCE_PAIRS = {"O2 LHS/RHS": RULE_O2_AB_ABSOLUTE_TOLERANCE_PP}
+
+
+def check_ab_deviation(pairs: dict[str, tuple[float | None, float | None]]) -> list[dict[str, Any]]:
+    out = []
+    for name, (a, b) in pairs.items():
+        if a is None or b is None:
+            out.append({
+                "rule": 6, "name": f"A/B deviation -- {name}",
+                "status": "not_checkable", "message": "Missing A or B reading this tick.",
+                "applies_to": "boiler_duty.*, gas.o2_*",
+            })
+            continue
+
+        abs_tolerance = RULE_AB_ABSOLUTE_TOLERANCE_PAIRS.get(name)
+        if abs_tolerance is not None:
+            abs_gap = abs(a - b)
+            ok = abs_gap <= abs_tolerance
+            out.append({
+                "rule": 6, "name": f"A/B deviation -- {name}",
+                "status": "pass" if ok else "warn",
+                "message": (
+                    f"A={a:.2f}, B={b:.2f}, |A-B|={abs_gap:.2f}pp "
+                    f"({'within' if ok else 'EXCEEDS'} {abs_tolerance:.2f}pp ABSOLUTE tolerance "
+                    f"-- not the document's relative 5%, switched 2026-08-13 after a full-sweep "
+                    f"finding (56.94% of ticks exceeded 5% relative, mostly a small-denominator "
+                    f"artifact; this value is a data-derived candidate, not document-specified)"
+                    + ("" if ok else "; do not blindly average, investigate the outlier instrument first")
+                    + ")."
+                ),
+                "applies_to": "boiler_duty.*, gas.o2_*",
+            })
+            continue
+
+        avg = (a + b) / 2.0
+        dev_pct = abs(a - b) / avg * 100.0 if avg else 0.0
+        ok = dev_pct <= RULE_AB_DEVIATION_MAX_PCT
+        out.append({
+            "rule": 6, "name": f"A/B deviation -- {name}",
+            "status": "pass" if ok else "warn",
+            "message": (
+                f"A={a:.2f}, B={b:.2f}, |A-B|/avg={dev_pct:.2f}% "
+                f"({'within' if ok else 'EXCEEDS'} {RULE_AB_DEVIATION_MAX_PCT:.0f}% tolerance"
+                + ("" if ok else " -- do not blindly average, investigate the outlier instrument first")
+                + ")."
+            ),
+            "applies_to": "boiler_duty.*, gas.o2_*",
+        })
+    return out
+
+
+def check_feedwater_steam_balance(feedwater_flow: float, main_steam_flow: float) -> dict[str, Any]:
+    if not main_steam_flow:
+        return {
+            "rule": 7, "name": "Steam/Feedwater mass balance",
+            "status": "not_checkable", "message": "Main Steam Flow is zero/unavailable.",
+            "applies_to": "boiler_duty.FEEDWATER_FLOW vs MAIN_STEAM_FLOW",
+        }
+    dev_pct = (feedwater_flow - main_steam_flow) / main_steam_flow * 100.0
+    ok = abs(dev_pct) <= RULE_FEEDWATER_STEAM_BALANCE_TOLERANCE_PCT
+    return {
+        "rule": 7, "name": "Steam/Feedwater mass balance",
+        "status": "pass" if ok else "warn",
+        "message": (
+            f"Feedwater {feedwater_flow:.1f} TPH vs Main Steam {main_steam_flow:.1f} TPH, "
+            f"deviation {dev_pct:+.2f}% (tolerance used: +/-{RULE_FEEDWATER_STEAM_BALANCE_TOLERANCE_PCT:.0f}%, "
+            f"the doc's own stated range is 3-5%, ambiguous which exact number -- outer/"
+            f"lenient bound used here). No Blowdown/Spray Water Flow term included -- "
+            f"neither has a real tag, same gap already documented for Cluster 1's own "
+            f"Water-Steam Balance check."
+            + ("" if ok else " Large mismatch -> check spray/attemperator (CV-116/CV-121) and blowdown status.")
+        ),
+        "applies_to": "boiler_duty.FEEDWATER_FLOW vs MAIN_STEAM_FLOW",
+    }
+
+
+def check_bed_ash_temperature(value: float, is_real: bool) -> dict[str, Any]:
+    in_bed = RULE_BED_ASH_INBED_RANGE_C[0] <= value <= RULE_BED_ASH_INBED_RANGE_C[1]
+    post_cooler = RULE_BED_ASH_POSTCOOLER_RANGE_C[0] <= value <= RULE_BED_ASH_POSTCOOLER_RANGE_C[1]
+    if in_bed:
+        status, msg = "pass", f"{value:.0f}C matches the in-bed range (850-950C)."
+    elif post_cooler:
+        status, msg = "warn", f"{value:.0f}C matches the POST-ASH-COOLER range (150-250C), not in-bed -- confirm this matches what the calculation model expects, else re-map."
+    else:
+        status, msg = "warn", f"{value:.0f}C matches NEITHER the in-bed (850-950C) nor post-cooler (150-250C) range."
+    if not is_real:
+        status = "not_checkable"
+        msg += (" NOTE: still the library's reference-coal placeholder, not a real plant "
+                "reading -- ash temperatures were not part of the 2026-08-13 document "
+                "(ask-list item #15).")
+    return {"rule": 8, "name": "Bed-ash temperature sanity", "status": status, "message": msg, "applies_to": "refuse.bed_ash_temperature_c"}
+
+
+def check_ubc_order(refuse_kwargs: dict[str, Any]) -> dict[str, Any]:
+    bed = refuse_kwargs["bed_ash_unburned_carbon_pct"]
+    cyclone = refuse_kwargs["cyclone_ash_unburned_carbon_pct"]
+    aph = refuse_kwargs["aph_ash_unburned_carbon_pct"]
+    esp = refuse_kwargs["esp_ash_unburned_carbon_pct"]
+    ok = bed >= esp >= cyclone >= aph
+    return {
+        "rule": 9, "name": "Unburned-carbon distribution order-of-magnitude",
+        "status": "pass" if ok else "warn",
+        "message": (
+            f"Bed={bed}%, ESP={esp}%, Cyclone={cyclone}%, APH={aph}% -- expected order "
+            f"Bed > ESP > Cyclone > APH (coarser particles carry more UBC) -- "
+            f"{'follows' if ok else 'does NOT follow'} this pattern."
+        ),
+        "applies_to": "refuse.*_unburned_carbon_pct",
+    }
+
+
+def check_ambient_currency() -> dict[str, Any]:
+    return {
+        "rule": 10, "name": "Ambient data currency",
+        "status": "not_checkable",
+        "message": (
+            "Cannot be verified programmatically -- there is no distinct 'boiler test "
+            "window timestamp' field separate from the ambient document's own date "
+            f"({PLANT_ENGINEERING_DOC_DATE.date().isoformat()}) to compare against. "
+            "Flagged for manual confirmation with the plant/document owner that these "
+            "were logged at the same timestamp as an actual test window (site "
+            "met-station or handheld), not a daily average -- ask-list item #34."
+        ),
+        "applies_to": "ambient.*",
+    }
+
+
+def check_fixed_constants(h2o_factor: float, ubc_heating_value: float) -> dict[str, Any]:
+    ok = h2o_factor == RULE_ASME_HYDROGEN_TO_WATER_FACTOR and ubc_heating_value == RULE_ASME_UBC_HEATING_VALUE_KJ_KG
+    return {
+        "rule": 11, "name": "Fixed-constant lock",
+        "status": "pass" if ok else "warn",
+        "message": (
+            f"hydrogen_to_water_factor={h2o_factor} (ASME: {RULE_ASME_HYDROGEN_TO_WATER_FACTOR}), "
+            f"unburned_carbon_heating_value_kj_kg={ubc_heating_value} "
+            f"(ASME: {RULE_ASME_UBC_HEATING_VALUE_KJ_KG})"
+            + ("" if ok else " -- differs from ASME PTC 4.1 standard constants; requires a documented reason/alternate code reference if intentional.")
+        ),
+        "applies_to": "assumptions.hydrogen_to_water_factor, assumptions.unburned_carbon_heating_value_kj_kg",
+    }
+
+
+def check_spent_sorbent(value: float) -> dict[str, Any]:
+    if value == 0:
+        return {
+            "rule": 12, "name": "Spent sorbent verification",
+            "status": "not_checkable",
+            "message": (
+                "spent_sorbent_lbm_per_100_lbm_fuel=0 (library default) is only valid if "
+                "this CFBC unit has NO active limestone/sorbent injection -- not yet "
+                "confirmed either way. If dosing IS active, this input MUST be non-zero "
+                "-- verify with DM/limestone feeder logs before accepting 0. Ask-list item #35."
+            ),
+            "applies_to": "assumptions.spent_sorbent_lbm_per_100_lbm_fuel",
+        }
+    return {
+        "rule": 12, "name": "Spent sorbent verification", "status": "pass",
+        "message": f"spent_sorbent_lbm_per_100_lbm_fuel={value} (non-zero -- sorbent injection assumed confirmed active).",
+        "applies_to": "assumptions.spent_sorbent_lbm_per_100_lbm_fuel",
+    }
+
+
+def check_steam_design_limits(pressure: float, temperature: float) -> dict[str, Any]:
+    ok = pressure <= RULE_MAIN_STEAM_PRESSURE_MAX_KG_CM2 and temperature <= RULE_MAIN_STEAM_TEMPERATURE_MAX_C
+    return {
+        "rule": 13, "name": "Steam parameter design-limit check",
+        "status": "pass" if ok else "fail",
+        "message": (
+            f"Pressure={pressure:.1f} kg/cm2(a) (limit {RULE_MAIN_STEAM_PRESSURE_MAX_KG_CM2:.0f}), "
+            f"Temperature={temperature:.1f}C (limit {RULE_MAIN_STEAM_TEMPERATURE_MAX_C:.0f})"
+            + ("" if ok else " -- OUTSIDE design envelope, possible transmitter fault or abnormal operating condition, hold the test.")
+        ),
+        "applies_to": "boiler_duty.MAIN_STEAM_PRESSURE, MAIN_STEAM_TEMPERATURE",
+    }
+
+
+def check_load_stability(history: list[float]) -> dict[str, Any]:
+    window = history[-RULE_LOAD_STABILITY_WINDOW_ROWS:]
+    if len(window) < RULE_LOAD_STABILITY_WINDOW_ROWS:
+        return {
+            "rule": 14, "name": "Load stability window",
+            "status": "not_checkable",
+            "message": f"Only {len(window)} of {RULE_LOAD_STABILITY_WINDOW_ROWS} rows of history available yet (replay just started/reset).",
+            "applies_to": "boiler_duty.MAIN_STEAM_FLOW",
+        }
+    mean = sum(window) / len(window)
+    if mean == 0:
+        return {
+            "rule": 14, "name": "Load stability window",
+            "status": "not_checkable", "message": "Main Steam Flow mean is zero over the window.",
+            "applies_to": "boiler_duty.MAIN_STEAM_FLOW",
+        }
+    max_dev_pct = max(abs(v - mean) / mean * 100.0 for v in window)
+    ok = max_dev_pct <= RULE_LOAD_STABILITY_TOLERANCE_PCT
+    return {
+        "rule": 14, "name": "Load stability window",
+        "status": "pass" if ok else "warn",
+        "message": (
+            f"Main Steam Flow over last {RULE_LOAD_STABILITY_WINDOW_ROWS} rows "
+            f"(~60 min at this dataset's 5-min interval): mean={mean:.1f} TPH, "
+            f"max deviation={max_dev_pct:.2f}% "
+            f"({'within' if ok else 'EXCEEDS'} +/-{RULE_LOAD_STABILITY_TOLERANCE_PCT:.0f}% tolerance"
+            + ("" if ok else " -- reject, likely captured during ramp-up/ramp-down or a load swing")
+            + ")."
+        ),
+        "applies_to": "boiler_duty.MAIN_STEAM_FLOW",
+    }
+
+
+def run_validation_checks(
+    refuse_kwargs: dict[str, Any],
+    assumptions_kwargs: dict[str, Any],
+    boiler_duty_kwargs: dict[str, Any],
+    o2_econ: float,
+    ab_instruments: dict[str, float | None],
+    gas_path_temps: dict[str, float | None],
+    steam_flow_history: list[float],
+) -> list[dict[str, Any]]:
+    """Rules 4-14 (advisory). Rules 1, 2 (blocking gates) and 3 (cross-
+    referenced from the GCV Check the library itself computes) are NOT
+    included here -- run_efficiency() computes those three separately
+    (rules 1/2 must run BEFORE the library is even called, since they can
+    block the run entirely; rule 3 needs the library's own output, which
+    doesn't exist yet when this function would need to run) and merges all
+    14 into one sorted list. `refuse_kwargs` is used by rules 8/9 (bed-ash
+    temperature, UBC order)."""
+    checks = [
+        check_o2_rise_across_aph(
+            o2_econ, _REFERENCE_COAL["gas"]["o2_air_heater_outlet_dry_pct"], o2_aph_is_real=False,
+        ),
+        check_monotonic_gas_temp(
+            gas_path_temps.get("econ_inlet_c"), gas_path_temps.get("econ_outlet_c"), gas_path_temps.get("stack_c"),
+        ),
+    ]
+    checks.extend(check_ab_deviation({
+        "Steam Flow A/B": (ab_instruments.get("steam_flow_a"), ab_instruments.get("steam_flow_b")),
+        "SH-3 Pressure A/B": (ab_instruments.get("sh3_pressure_a"), ab_instruments.get("sh3_pressure_b")),
+        "SH-3 Temp A/B": (ab_instruments.get("sh3_temp_a"), ab_instruments.get("sh3_temp_b")),
+        "O2 LHS/RHS": (ab_instruments.get("o2_lhs"), ab_instruments.get("o2_rhs")),
+    }))
+    checks.append(check_feedwater_steam_balance(boiler_duty_kwargs["FEEDWATER_FLOW"], boiler_duty_kwargs["MAIN_STEAM_FLOW"]))
+    checks.append(check_bed_ash_temperature(refuse_kwargs["bed_ash_temperature_c"], is_real=False))
+    checks.append(check_ubc_order(refuse_kwargs))
+    checks.append(check_ambient_currency())
+    checks.append(check_fixed_constants(
+        assumptions_kwargs["hydrogen_to_water_factor"], assumptions_kwargs["unburned_carbon_heating_value_kj_kg"],
+    ))
+    checks.append(check_spent_sorbent(assumptions_kwargs["spent_sorbent_lbm_per_100_lbm_fuel"]))
+    checks.append(check_steam_design_limits(boiler_duty_kwargs["MAIN_STEAM_PRESSURE"], boiler_duty_kwargs["MAIN_STEAM_TEMPERATURE"]))
+    checks.append(check_load_stability(steam_flow_history))
+    checks.sort(key=lambda c: c["rule"])
+    return checks
+
 
 # The six BoilerDutyInputs fields this module needs resolved effective
 # values for -- see run_efficiency()'s boiler_duty_fields parameter.
@@ -182,22 +677,6 @@ def classify_co_flag(co_ppm: float | None, co_data_source: str = "simulated") ->
     }
 
 
-def _placeholder_fuel_composition() -> dict[str, float]:
-    """Ultimate + proximate analysis fields with no real plant source yet
-    (hindalco_boiler9_pai_s02_v1.yaml fuel.* block) -- borrowed unmodified
-    from the library's own bundled reference coal."""
-    f = _REFERENCE_COAL["fuel"]
-    return {
-        "carbon_pct": f["carbon_pct"],
-        "hydrogen_pct": f["hydrogen_pct"],
-        "oxygen_pct": f["oxygen_pct"],
-        "nitrogen_pct": f["nitrogen_pct"],
-        "sulfur_pct": f["sulfur_pct"],
-        "ash_pct": f["ash_pct"],
-        "moisture_pct": f["moisture_pct"],
-        "volatile_matter_pct": f["volatile_matter_pct"],
-        "fixed_carbon_pct": f["fixed_carbon_pct"],
-    }
 
 
 def build_inputs(
@@ -220,53 +699,94 @@ def build_inputs(
 
     data_source values match the vocabulary already in production use on
     /api/state (Module 1/2's state_builder.py + frontend DataSourceChip):
-    "real", "stale", "simulated", "static_config". assumption_notes carries
-    the longer prose explanations (e.g. the O2 tap-location assumption
-    below) that don't fit a one-word chip, for the frontend's Data Source /
-    Assumptions panel."""
+    "real", "stale", "simulated", "static_config", plus "documented"
+    (added 2026-08-13) -- a real value from a plant engineering document
+    (fuel.*, refuse.*_distribution_pct/_unburned_carbon_pct, ambient.*,
+    gcv_check.*), deliberately distinct from "static_config" (a generic
+    Awes/library engineering default with no plant-specific override,
+    e.g. assumptions.*, enthalpy.reference_water_temperature_c,
+    gas.flue_gas_specific_heat_cpg_btu_lbm_f) -- both render as chips, but
+    "documented" should read as "a confirmed plant number" and
+    "static_config" as "a generic placeholder pending confirmation", not
+    the same thing. assumption_notes carries the longer prose explanations
+    (e.g. the O2 tap-location assumption below) that don't fit a one-word
+    chip, for the frontend's Data Source / Assumptions panel."""
 
     data_source: dict[str, str] = {}
     assumption_notes: list[str] = []
 
-    placeholder_fuel = _placeholder_fuel_composition()
+    # RESOLVED 2026-08-13: real Ultimate + Proximate Analysis from a plant
+    # engineering document (ask-list item #14), superseding the reference-
+    # coal placeholder. hhv_kj_kg uses THIS document's own value (14870),
+    # not GCV_KJ_PER_KG (Module 1's separate COAL_GCV constant, ~1.6%
+    # higher, different source) -- see GCV_KCAL_PER_KG's comment above for
+    # why those two are deliberately kept independent (Gate 1).
     fuel_kwargs = {
-        **placeholder_fuel,
-        "hhv_kj_kg": GCV_KJ_PER_KG,
-        "name": "Hindalco Boiler-9 coal (placeholder ultimate/proximate analysis)",
+        **FUEL_ULTIMATE_PROXIMATE,
+        "hhv_kj_kg": FUEL_HHV_KJ_KG,
+        "name": "Hindalco Boiler-9 coal (plant engineering document, 2026-08-13)",
     }
-    for k in placeholder_fuel:
-        data_source[f"fuel.{k}"] = "simulated"
-    # Gate: GCV staleness (spec, >8h -> "GCV Data Stale"). GCV_LAST_UPDATED
-    # is process-start time (no real per-shift entry mechanism exists yet,
-    # see GCV_LAST_UPDATED's own comment) -- won't trigger within one
-    # server run, but the check is real and independently testable.
+    for k in FUEL_ULTIMATE_PROXIMATE:
+        data_source[f"fuel.{k}"] = "documented"
+    # Gate: GCV staleness (spec, >8h -> "GCV Data Stale"). This gate models
+    # a per-shift LIVE lab entry, per the spec's own framing -- GCV_LAST_UPDATED
+    # is still process-start time (no real per-shift entry mechanism exists
+    # yet, see GCV_LAST_UPDATED's own comment; ask-list item on the
+    # per-shift workflow is still open) -- won't trigger within one server
+    # run, but the check is real and independently testable. Deliberately
+    # NOT reset to PLANT_ENGINEERING_DOC_DATE: this document is a periodic
+    # test-report figure, not a per-shift one, so treating its age against
+    # an 8-hour per-shift threshold would misrepresent it as needing hourly
+    # refresh -- a different cadence question, tracked separately (see
+    # PLANT_ENGINEERING_DOC_DATE's own comment above).
     gcv_stale = gcv_is_stale()
-    data_source["fuel.hhv_kj_kg"] = "stale" if gcv_stale else "real"
+    data_source["fuel.hhv_kj_kg"] = "stale" if gcv_stale else "documented"
     assumption_notes.append(
-        "fuel.* (except hhv_kj_kg): full Ultimate + Proximate Analysis not yet "
-        "available for this plant's coal -- using the calculation library's own "
-        "bundled ASME Appendix D-4 reference coal composition as a clearly-"
-        "flagged placeholder, NOT this plant's actual coal. Blocked on the same "
-        "lab report as Module 2 (PAI-S03)'s afr_design."
+        f"fuel.*: real Ultimate + Proximate Analysis from a plant engineering "
+        f"document, last updated {PLANT_ENGINEERING_DOC_DATE.date().isoformat()} "
+        f"({plant_doc_age_days():.0f} days ago) -- supersedes the library's "
+        f"bundled reference-coal placeholder. Same lab report unblocks Module 2 "
+        f"(PAI-S03)'s afr_design too."
     )
 
-    refuse_kwargs = dict(_REFERENCE_COAL["refuse"])
-    for k in refuse_kwargs:
+    # RESOLVED (partial) 2026-08-13: real ash distribution %/unburned-carbon
+    # % from the same document (ask-list item #15) -- ash TEMPERATURES were
+    # not part of it and still come from the reference-coal placeholder
+    # (bed/cyclone/APH/ESP temperatures), a deliberate real+placeholder mix
+    # per the config's own note (same reasoning already applied to
+    # cyclone_ash_temperature_c's candidate-tag deferral).
+    refuse_kwargs = {
+        **REFUSE_ASH_SPLIT,
+        "bed_ash_temperature_c": _REFERENCE_COAL["refuse"]["bed_ash_temperature_c"],
+        "cyclone_ash_temperature_c": _REFERENCE_COAL["refuse"]["cyclone_ash_temperature_c"],
+        "aph_ash_temperature_c": _REFERENCE_COAL["refuse"]["aph_ash_temperature_c"],
+        "esp_ash_temperature_c": _REFERENCE_COAL["refuse"]["esp_ash_temperature_c"],
+    }
+    for k in REFUSE_ASH_SPLIT:
+        data_source[f"refuse.{k}"] = "documented"
+    for k in ("bed_ash_temperature_c", "cyclone_ash_temperature_c", "aph_ash_temperature_c", "esp_ash_temperature_c"):
         data_source[f"refuse.{k}"] = "simulated"
     assumption_notes.append(
-        "refuse.*: ash distribution / unburned-carbon / ash-temperature data is "
-        "an entirely new plant-input category, not yet supplied -- using the "
-        "reference coal's refuse block as a placeholder (ash distribution must "
-        "sum to 100%, a hard library requirement)."
+        f"refuse.*: ash distribution % and unburned-carbon % per stream are "
+        f"real (same plant engineering document as fuel.*, last updated "
+        f"{PLANT_ENGINEERING_DOC_DATE.date().isoformat()}). Ash TEMPERATURES "
+        f"per stream were NOT part of that document and still use the "
+        f"reference coal's placeholder values -- a deliberate, documented "
+        f"real+placeholder mix, not a silent default."
     )
 
-    ambient_kwargs = dict(_REFERENCE_COAL["ambient"])
+    # RESOLVED 2026-08-13 (ask-list item #16): explicit static design-basis
+    # ambient values from the same document. "documented", not "real" --
+    # not a live tag, not in the historian export.
+    ambient_kwargs = dict(AMBIENT_CONDITIONS)
     for k in ambient_kwargs:
-        data_source[f"ambient.{k}"] = "simulated"
+        data_source[f"ambient.{k}"] = "documented"
     assumption_notes.append(
-        "ambient.*: plant weather data (dry bulb, pressure, RH) is not in the "
-        "historian export -- using the reference coal example's ambient block "
-        "as a placeholder pending an external weather source or plant assumption."
+        f"ambient.*: static design-basis values from the same plant "
+        f"engineering document as fuel.*/refuse.* above, last updated "
+        f"{PLANT_ENGINEERING_DOC_DATE.date().isoformat()} -- still not a live "
+        f"tag (not in the historian export), so tagged documented rather "
+        f"than real."
     )
 
     # o2_economizer_outlet_dry_pct: the one real value in this whole block.
@@ -342,9 +862,13 @@ def build_inputs(
     for k, (_v, ds) in boiler_duty_fields.items():
         data_source[f"boiler_duty.{k}"] = ds
 
+    # Cross-confirmed 2026-08-13 by the same plant engineering document as
+    # fuel.*/refuse.*/ambient.* above (see config's gcv_check.* note) --
+    # "documented", not the generic "static_config" a library-default value
+    # would get.
     gcv_check_kwargs = {"lower": GCV_CHECK_LOWER, "upper": GCV_CHECK_UPPER, "apply_correction": False}
     for k in gcv_check_kwargs:
-        data_source[f"gcv_check.{k}"] = "static_config"
+        data_source[f"gcv_check.{k}"] = "documented"
 
     return (
         {
@@ -371,6 +895,9 @@ def run_efficiency(
     fuel_flow_data_source: str = "real",
     co_ppm: float | None = None,
     co_data_source: str = "simulated",
+    ab_instruments: dict[str, float | None] | None = None,
+    gas_path_temps: dict[str, float | None] | None = None,
+    steam_flow_history: list[float] | None = None,
 ) -> dict[str, Any]:
     """Builds inputs, runs the unmodified orchestrator, and returns the API
     payload: full engine output + data_source map + warnings (the library's
@@ -403,6 +930,12 @@ def run_efficiency(
     this gate will apply directly to the same tag driving the calculation.
     Only "stale" blocks (frozen/untrustworthy) -- "simulated" (an active
     demo scenario deliberately biasing a value) is not treated as invalid.
+
+    `ab_instruments`/`gas_path_temps`/`steam_flow_history` feed the 2026-08-13
+    Logical Filtering & Validation Rules (advisory checks 4-6, 14; see
+    run_validation_checks()'s docstring) -- optional so existing callers/
+    tests that don't pass them still work, just with those specific checks
+    returning "not_checkable" instead of a real result.
     """
     missing = [k for k, (v, _ds) in boiler_duty_fields.items() if v is None]
     if o2_value is None:
@@ -431,6 +964,33 @@ def run_efficiency(
         }
 
     kwargs, data_source, assumption_notes = build_inputs(boiler_duty_fields, o2_value, o2_data_source)
+
+    # ---- Rules 1 & 2 (Logical Filtering & Validation Rules, 2026-08-13):
+    # the spec's own stated action for both is to NOT proceed with the
+    # efficiency run at all -- real blocking gates, not advisory checks.
+    # Reuses the exact same check functions run_validation_checks() calls
+    # for the full 14-rule list later, so there's one implementation each,
+    # not duplicated logic between "blocking" and "advisory" paths. ----
+    mass_closure_check = check_mass_closure(kwargs["fuel"])
+    ash_split_check = check_ash_split_closure(kwargs["refuse"])
+    blocking_failures = [c for c in (mass_closure_check, ash_split_check) if c["status"] == "fail"]
+    if blocking_failures:
+        return {
+            "status": "invalid_inputs",
+            "error": "Validation rule failure -- " + "; ".join(f"Rule {c['rule']} ({c['name']}): {c['message']}" for c in blocking_failures),
+            "data_source": {},
+            "assumption_notes": [],
+            "warnings": [],
+            "validation_checks": [mass_closure_check, ash_split_check],
+        }
+
+    # Built once so run_validation_checks() (rules 11, 12) can read the
+    # ACTUAL field values (kwargs["assumptions"] is deliberately {} --
+    # "EfficiencyAssumptions() library defaults used as-is" -- so the
+    # dataclass instance, not the raw empty kwargs dict, is the only place
+    # those values exist).
+    assumptions_obj = EfficiencyAssumptions(**kwargs["assumptions"])
+
     try:
         result = run_energy_balance(
             FuelAnalysis(**kwargs["fuel"]),
@@ -438,7 +998,7 @@ def run_efficiency(
             AmbientConditions(**kwargs["ambient"]),
             GasMeasurements(**kwargs["gas"]),
             EnthalpyInputs(**kwargs["enthalpy"]),
-            EfficiencyAssumptions(**kwargs["assumptions"]),
+            assumptions_obj,
             BoilerDutyInputs(**kwargs["boiler_duty"]),
             GCVCheckInputs(**kwargs["gcv_check"]),
         )
@@ -474,13 +1034,20 @@ def run_efficiency(
         assumption_notes.append(
             "direct_method.eta_direct_hhv_pct: computed from the real \"FUEL FLOW\" "
             "historian tag (independent of the library's own fuel_firing output, "
-            "which is circular -- see this module's docstring) x the real plant "
-            "GCV. Currently disagrees with eta_indirect frequently (not rare), "
-            "because eta_indirect's loss terms still run on a placeholder fuel "
-            "composition (see fuel.* note) that barely varies with real "
-            "conditions, while eta_direct moves with real Fuel Flow and real "
-            "steam-side heat balance -- this cross-check becomes fully meaningful "
-            "once real Ultimate/Proximate Analysis replaces the placeholder."
+            "which is circular -- see this module's docstring) x GCV_KCAL_PER_KG "
+            "(3610 kcal/kg, Module 1's COAL_GCV). Measured (2000-tick offline "
+            "sweep, 2026-08-13): even with real fuel.* now wired in, this still "
+            "disagrees with eta_indirect on 99.8% of ticks -- not because fuel "
+            "composition is fake anymore (it isn't), but because (a) fuel.*/"
+            "refuse.*/ambient.* are all STATIC values that don't vary tick-to-"
+            "tick, so eta_indirect itself barely moves (87.52-87.66% in the "
+            "sweep) while eta_direct is highly volatile (37-92%), driven by "
+            "real Fuel Flow tag noise against a GCV constant that itself, and "
+            "(b) GCV_KCAL_PER_KG (3610 kcal/kg / 15114.3 kJ/kg) differs ~1.64% "
+            "from fuel.hhv_kj_kg's own real value (14870 kJ/kg / 3551.6 "
+            "kcal/kg) -- two different documents, kept deliberately independent "
+            "(see GCV_KCAL_PER_KG's own comment) rather than reconciled, which "
+            "adds a small systematic offset on top of Fuel Flow's own noise."
         )
     else:
         result["direct_method"] = {
@@ -554,6 +1121,40 @@ def run_efficiency(
         "fly_ash_data_source": "static_config",
         "composite": "good" if (not gcv_is_stale() and o2_data_source == "real") else "degraded",
     }
+
+    # ---- Logical Filtering & Validation Rules, 2026-08-13 -- rules 4-14
+    # (advisory) plus rules 1/2 (already evaluated above as blocking gates,
+    # included again here so this is always the complete 14-rule list) and
+    # rule 3 (cross-referenced from the GCV Check the library just computed
+    # above, not recomputed). ----
+    gcv_vals = result["gcv_check"]["values"]
+    rule_3 = {
+        "rule": 3, "name": "GCV cross-check band",
+        "status": "pass" if gcv_vals["correction_required"] == 0 else "warn",
+        "message": (
+            f"g_factor={gcv_vals['g_factor']:.4f} (band [{GCV_CHECK_LOWER:.2f}, {GCV_CHECK_UPPER:.2f}]) -- "
+            "this IS the existing GCV Check mechanism (Phase A Gate 2's sibling), not a "
+            "separate computation."
+            + (" Outside band, apply_correction=False -> flagged for lab HHV re-check (not auto-corrected)." if gcv_vals["correction_required"] else "")
+        ),
+        "applies_to": "fuel.hhv_kj_kg vs gcv_check",
+    }
+    result["validation_checks"] = sorted(
+        [mass_closure_check, ash_split_check, rule_3] + run_validation_checks(
+            refuse_kwargs=kwargs["refuse"],
+            assumptions_kwargs={
+                "hydrogen_to_water_factor": assumptions_obj.hydrogen_to_water_factor,
+                "unburned_carbon_heating_value_kj_kg": assumptions_obj.unburned_carbon_heating_value_kj_kg,
+                "spent_sorbent_lbm_per_100_lbm_fuel": assumptions_obj.spent_sorbent_lbm_per_100_lbm_fuel,
+            },
+            boiler_duty_kwargs=kwargs["boiler_duty"],
+            o2_econ=o2_value,
+            ab_instruments=ab_instruments or {},
+            gas_path_temps=gas_path_temps or {},
+            steam_flow_history=steam_flow_history or [],
+        ),
+        key=lambda c: c["rule"],
+    )
 
     result["status"] = "ok"
     result["data_source"] = data_source

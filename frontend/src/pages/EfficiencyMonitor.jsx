@@ -661,7 +661,7 @@ export default function EfficiencyMonitor() {
                   <th className="text-right px-2 py-1.5">η vs Design</th>
                   <th className="text-right px-2 py-1.5">DGL%</th>
                   <th className="text-right px-2 py-1.5">FA Carbon%*</th>
-                  <th className="text-right px-2 py-1.5">GCV kcal/kg</th>
+                  <th className="text-right px-2 py-1.5">GCV kcal/kg‡</th>
                   <th className="text-right px-2 py-1.5">O2%</th>
                   <th className="text-right px-2 py-1.5">Stack °C</th>
                   <th className="text-right px-2 py-1.5">CO ppm†</th>
@@ -691,7 +691,7 @@ export default function EfficiencyMonitor() {
           </div>
         )}
         <div className="px-3 pb-3 text-[10px] text-zinc-600">
-          * FA Carbon = Unburned Carbon Loss, combined across all 4 ash streams, not fly-ash-specific (see Loss Waterfall note). † CO simulated, not a real tag.
+          * FA Carbon = Unburned Carbon Loss, combined across all 4 ash streams, not fly-ash-specific (see Loss Waterfall note). † CO simulated, not a real tag. ‡ GCV shown here is fuel.hhv_kj_kg (the plant-document value that actually drives every other column in this row) — not the same constant Gate 1's Mass Balance card uses for eta_direct, which is deliberately kept independent (see Data Source / Assumptions panel).
         </div>
       </Panel>
     </div>

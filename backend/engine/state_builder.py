@@ -186,7 +186,7 @@ from clusters.cluster_baseline import get_cluster1_baseline
 from clusters.cluster_features import build_cluster_view
 from clusters.cluster_validator import validate_row as validate_cluster_row
 from efficiency_engine.adapter import (
-    GCV_CHECK_LOWER, GCV_CHECK_UPPER, GCV_KCAL_PER_KG, ETA_DESIGN_PCT,
+    GCV_CHECK_LOWER, GCV_CHECK_UPPER, FUEL_HHV_KCAL_KG, ETA_DESIGN_PCT,
     run_efficiency, classify_co_flag,
 )
 from engine.baseline import TRAIN_FRAC, get_baseline
@@ -995,10 +995,40 @@ class RealDataStateBuilder:
         fuel_flow_raw = fuel_row.get("FUEL_FLOW")
         fuel_flow_value = None if pd.isna(fuel_flow_raw) else float(fuel_flow_raw)
 
+        # ---- Logical Filtering & Validation Rules (2026-08-13), rules 4-6
+        # and 14 -- raw inputs these advisory checks need, beyond what
+        # boiler_duty_fields/o2_value already carry. `cluster_row` (Steam
+        # Flow A/B) and `s02_row` (SH-3 Pressure/Temp A/B, O2 LHS/RHS) are
+        # both already extracted earlier in this same tick -- reused, not
+        # re-read. `row` is Module 1's own replayed row (same one
+        # stack_temp_gate_value/etc. already read from). Any NaN reads as
+        # None, same convention as every other raw value in this method. ----
+        def _f(v):
+            return None if v is None or pd.isna(v) else float(v)
+
+        ab_instruments = {
+            "steam_flow_a": _f(cluster_row.get("STEAM_FLOW_A")),
+            "steam_flow_b": _f(cluster_row.get("STEAM_FLOW_B")),
+            "sh3_pressure_a": _f(s02_row.get("SH3_PRESSURE_A")),
+            "sh3_pressure_b": _f(s02_row.get("SH3_PRESSURE_B")),
+            "sh3_temp_a": _f(s02_row.get("SH3_TEMP_A")),
+            "sh3_temp_b": _f(s02_row.get("SH3_TEMP_B")),
+            "o2_lhs": _f(s02_row.get("O2_LHS")),
+            "o2_rhs": _f(s02_row.get("O2_RHS")),
+        }
+        gas_path_temps = {
+            "econ_inlet_c": _f(row.get("ECONOMIZER_INLET_GAS_TEMP")),
+            "econ_outlet_c": _f(row.get("ECONOMIZER_OUTLET_GAS_TEMP")),
+            "stack_c": _f(row.get("STACK_TEMPERATURE")),
+        }
+        steam_flow_history = list(self._param_runtime["steam_flow"].history)
+
         efficiency_result = run_efficiency(
             boiler_duty_fields, o2_value, o2_efficiency_source,
             stack_temp_data_source=stack_temp_gate_source,
             fuel_flow_tph=fuel_flow_value, fuel_flow_data_source="real",
+            ab_instruments=ab_instruments, gas_path_temps=gas_path_temps,
+            steam_flow_history=steam_flow_history,
         )
         self._last_efficiency_snapshot = {
             "ts": _now_iso(),
@@ -1178,7 +1208,18 @@ class RealDataStateBuilder:
         # unburned-carbon figure across all 4 ash streams, not a
         # fly-ash-specific number (that split doesn't exist yet -- Awes ask
         # list). Labeled accordingly in the frontend, not silently implied
-        # to be fly-ash-only. ----
+        # to be fly-ash-only.
+        #
+        # "GCV" uses FUEL_HHV_KCAL_KG (fuel.hhv_kj_kg's kcal/kg form) -- the
+        # GCV that actually feeds eta/DGL/every other column in this same
+        # row, via the library's own calculation. NOT GCV_KCAL_PER_KG
+        # (Gate 1's deliberately-independent Q_input source, decisions.md
+        # #43) -- that constant predates the 2026-08-13 real-fuel-data
+        # wiring and was simply the only GCV value that existed when this
+        # table was first built (Phase D); left unrevisited until now, not
+        # a deliberate choice the way Gate 1's independence is. Fixed
+        # 2026-08-14 so this column matches the GCV Check card's own
+        # "Measured HHV" figure instead of showing an unrelated number. ----
         if efficiency_result.get("status") == "ok":
             shift_id, shift_label = _shift_key(source_ts)
             bucket = self._shift_stats.setdefault(shift_id, {
@@ -1191,7 +1232,7 @@ class RealDataStateBuilder:
             bucket["sum_eta"] += eff_vals["boiler_efficiency_hhv_pct"]
             bucket["sum_dgl"] += eff_vals["dry_flue_gas_loss_pct"]
             bucket["sum_fa_carbon"] += eff_vals["unburned_carbon_loss_pct"]
-            bucket["sum_gcv"] += GCV_KCAL_PER_KG
+            bucket["sum_gcv"] += FUEL_HHV_KCAL_KG
             bucket["sum_o2"] += o2_value
             bucket["sum_stack_temp"] += stack_temp_value
             bucket["sum_co"] += self._co_ppm

@@ -30,15 +30,32 @@ const DATA_SOURCE_LABEL = {
   // Distinct from every state above: not a blocked/uncertain REAL value --
   // there is no formula computing this at all (see decisions.md, Phase C).
   unavailable_no_formula: "NO FORMULA",
+  // A real value from a plant engineering document (fuel.*, refuse.*
+  // distribution/unburned-carbon, ambient.*, gcv_check.*, 2026-08-13) --
+  // deliberately distinct from static_config/"ASSUMED" (a generic Awes/
+  // library engineering default with no plant-specific override). A
+  // reader should be able to tell "confirmed plant number" apart from
+  // "generic placeholder pending confirmation" at a glance -- see
+  // decisions.md #47.
+  documented: "DOCUMENTED",
+};
+
+// Only "documented" gets a distinct (green) treatment -- it's the one
+// state here that means "confirmed real data," not "blocked/uncertain/
+// generic default." Every other chip keeps the shared neutral grey style
+// unchanged, so no existing chip anywhere in the app changes appearance.
+const DATA_SOURCE_COLOR = {
+  documented: STATUS_COLOR.green,
 };
 
 export function DataSourceChip({ dataSource }) {
   const label = DATA_SOURCE_LABEL[dataSource];
   if (!label) return null;
+  const color = DATA_SOURCE_COLOR[dataSource];
   return (
     <span
-      className="font-mono text-[9px] px-1 py-0.5 uppercase tracking-wider text-zinc-500"
-      style={{ border: "1px solid #3F3F46" }}
+      className="font-mono text-[9px] px-1 py-0.5 uppercase tracking-wider"
+      style={{ color: color || "#71717A", border: `1px solid ${color || "#3F3F46"}` }}
     >
       {label}
     </span>

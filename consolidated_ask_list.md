@@ -64,6 +64,35 @@ the underlying tag question (item 9 below) is ever confirmed. This is a
 *workaround*, not an answer — the tag question itself is still open. See
 decisions.md #22.
 
+**R4. Fuel Ultimate/Proximate Analysis (Module 3/PAI-S02 `fuel.*`, also
+unblocks Module 2/PAI-S03's `afr_design`).** Real values received from a
+plant engineering document, 2026-08-13: carbon_pct=36.13,
+hydrogen_pct=2.05, oxygen_pct=11.32, nitrogen_pct=0.89, sulfur_pct=0.5,
+ash_pct=36.81, moisture_pct=12.31, hhv_kj_kg=14870, volatile_matter_pct=
+26.4, fixed_carbon_pct=30.48. Wired into `hindalco_boiler9_pai_s02_v1.yaml`
+fuel.* as `static_config`, source "plant engineering document, 2026-08-13".
+Note: this document's HHV (14870 kJ/kg) differs ~1.64% from Module 1's
+separate COAL_GCV constant (3610 kcal/kg / 15114.3 kJ/kg, different source)
+— deliberately NOT reconciled, see decisions.md #43. Also revealed a real
+finding worth the document owner's attention: Dulong HHV computed from
+this composition (3149.3 kcal/kg) vs. the document's own Measured HHV
+(3551.6 kcal/kg) gives g_factor=0.887, outside GCV Check's [0.95, 1.04]
+band — worth double-checking for a transcription error, or may be a
+genuine ultimate-analysis/HHV basis mismatch. See decisions.md #43.
+
+**R5. Ambient weather data (Module 3/PAI-S02 `ambient.*`).** Real static
+design-basis values received from the same 2026-08-13 plant engineering
+document: dry_bulb_c=37.8, pressure_bar_a=0.9888, relative_humidity_pct=
+46.61, fuel_temp_c=37.8. Wired in as `static_config` (still not a live
+tag — not in the historian export). See decisions.md #43.
+
+**R6. Refuse ash distribution % / unburned-carbon % per stream (Module
+3/PAI-S02 `refuse.*`) — PARTIAL resolution of item 15 below.** Real values
+received from the same 2026-08-13 document: bed/cyclone/APH/ESP
+distribution = 10/40/0/50%, unburned-carbon = 6.4/0.3/0/2.31%. Wired in as
+`static_config`. Ash TEMPERATURES per stream were NOT part of this
+document and remain open — see item 15, not fully closed.
+
 ---
 
 ## Open — Tag Confirmation (Punarbasu)
@@ -153,31 +182,25 @@ on its own.
 
 ## Open — Lab Report (Punarbasu)
 
-**14. Fuel Ultimate/Proximate Analysis** (Carbon%, Hydrogen%, Oxygen%,
-Nitrogen%, Sulfur%, Ash%, Moisture%, Volatile Matter%, Fixed Carbon%) —
-**one lab report, two dependents**:
-   - Module 3/PAI-S02: `fuel.*` — blocks the GCV Check's real basis, the
-     direct-vs-indirect cross-check's meaningfulness (decisions.md #29's
-     note), and every fuel-composition-dependent loss term.
-   - Module 2/PAI-S03: `afr_design` — currently a simulated placeholder
-     formula, needs Carbon%/Hydrogen% specifically.
-   Only GCV (3610 kcal/kg, Proximate Analysis basis) is a confirmed real
-   static constant today (decisions.md #18).
+**14. Fuel Ultimate/Proximate Analysis — RESOLVED, see R4 above.**
 
-**15. Refuse/ash data (Module 3/PAI-S02 `refuse.*`).** Bed/cyclone/APH/ESP
-ash distribution %, unburned-carbon % per stream, ash temperatures per
-stream (except item 13 above) — an entirely new plant-input category, no
-real data exists at all today.
+Module 2/PAI-S03's `afr_design` still needs to actually be rewired to
+consume Carbon%/Hydrogen% from this same data (currently still a
+simulated placeholder formula) — R4 only resolved the data itself and
+Module 3/PAI-S02's own consumption of it; the Module 2 rewiring is a
+follow-up implementation task, not a new plant ask.
+
+**15. Refuse ash TEMPERATURES per stream (Module 3/PAI-S02 `refuse.*`,
+bed/cyclone/aph/esp_ash_temperature_c) — still open.** Distribution % and
+unburned-carbon % per stream are resolved (see R6 above); temperatures
+were not part of that document. `cyclone_ash_temperature_c` has candidate
+real tags (item 13 above); the other three have no candidate at all.
 
 ---
 
 ## Open — Design Document (Punarbasu)
 
-**16. Ambient weather data (Module 3/PAI-S02 `ambient.*`).** Dry-bulb
-temperature, atmospheric pressure, relative humidity, and fuel
-temperature — none of these exist in the historian at all (checked all
-103 columns). Needs an external weather-data source or an explicit static
-design-basis assumption.
+**16. Ambient weather data — RESOLVED, see R5 above.**
 
 **17. Excess Dry Gas Loss / Excess Unburnt Carbon setpoints (Module
 3/PAI-S02 Phase B, `scoring.excess_dgl_setpoint` /
@@ -191,6 +214,111 @@ than 0.3% → RED marker." Checked — not assumed missing — the bundled
 Appendix D-4 reference example (`mundra_result.json`) for any such value:
 none exist anywhere in it. Needed from the plant's design basis or from
 Awes if the library has them elsewhere (decisions.md #36).
+
+**32. Which GCV figure is authoritative — new, surfaced by R4 (2026-08-13).**
+Two different GCV values are now in the system from two different, unreconciled
+documents: `fuel.hhv_kj_kg` = 14870 kJ/kg (3551.6 kcal/kg, this 2026-08-13
+document) vs. Module 1's `COAL_GCV` / `GCV_KCAL_PER_KG` = 3610 kcal/kg
+(15114.3 kJ/kg, source/date unknown), ~1.64% apart. Currently kept
+deliberately independent (Gate 1's cross-check needs two separate GCV
+sources), but worth the plant confirming which is more current/authoritative
+for future single-source use elsewhere. See decisions.md #43.
+
+**33. GCV Check now fails (g_factor=0.887) with the 2026-08-13 document's
+real values — worth the document owner double-checking.** Dulong HHV
+computed from the document's own C/H/O/S composition (3149.3 kcal/kg) vs.
+the same document's stated Measured HHV (3551.6 kcal/kg) falls outside the
+GCV Check's [0.95, 1.04] band. Since both figures are static, this is now
+a permanent, deterministic WARN, not intermittent noise. Possible causes:
+a transcription error in one field of the document, or a genuine
+ultimate-analysis/HHV basis mismatch (e.g. different moisture bases) in
+the underlying lab work. Not adjusted or resolved unilaterally here — see
+decisions.md #43.
+
+**34. Ambient data currency (Validation Rule #10) — Design Document.** Were
+the 2026-08-13 document's ambient readings (dry bulb, RH, barometric
+pressure) logged AT THE SAME TIMESTAMP as an actual boiler test window
+(site met-station or handheld reading), or are they a daily/period
+average? Cannot be verified programmatically — there's no distinct
+"test-window timestamp" field separate from the document's own date to
+compare against. If not time-aligned with a real test window, the rule's
+own stated action is to reject these readings.
+
+**35. Does this CFBC unit have active limestone/sorbent injection?
+(Validation Rule #12) — Tag/Process Confirmation.**
+`assumptions.spent_sorbent_lbm_per_100_lbm_fuel=0` is currently wired
+(library default) — valid ONLY if no sorbent dosing is in service on this
+unit. If dosing IS active, this must be a real non-zero value from
+DM/limestone feeder logs, not 0. Not yet confirmed either way.
+
+**36. O2 LHS/RHS calibration offset — confirmed real and persistent, full
+year swept (Validation Rule #6) — Plant/Site Team.** Full test-window
+sweep (73,069 valid rows, 2026-08-13): exceeds the 5% relative tolerance
+on **56.94%** of ticks — this is a genuine year-round pattern, not a
+one-off (superseding the earlier single-tick framing). But investigated,
+not just counted: RHS reads ~0.40 percentage points higher than LHS on
+average, all year (LHS > RHS only 17% of ticks) — a real, directional,
+persistent offset, structurally the same kind of finding as the PA/SA Fan
+Current A/B offsets already found in Clusters 2/4 (decisions.md #13). Most
+of the extreme relative-percentage tail is a percentage-of-small-number
+artifact (median ABSOLUTE gap is only 0.23pp; relative % balloons when
+average O2 is 1-2%) — the 5% relative-tolerance rule itself may be too
+tight for how O2 normally reads at this plant's typical 3-5% excess-air
+range, separate from whether the sensors need recalibrating. September
+2024 stands out further (97.6% exceedance, ~0.93pp average offset vs.
+~0.40pp typical elsewhere) — checked for stuck/frozen values first (none
+found), so this looks like a real, distinct calibration-drift period, not
+a data artifact. Two real questions for the plant: (a) does O2 LHS/RHS
+need recalibration given the persistent ~0.4pp offset, and (b) what
+happened in September 2024 specifically (worth checking against
+maintenance logs, same as Cluster 1's date-specific event asks, items
+#30-31).
+
+**Update, 2026-08-14 — tolerance switched, re-swept.** Rule 6's O2 LHS/RHS
+sub-check now uses an absolute tolerance (0.85pp, the p90 of the observed
+absolute gap — a data-derived candidate, `status:
+configurable_pending_confirmation` in `hindalco_boiler9_pai_s02_v1.yaml`
+`scoring.o2_ab_absolute_tolerance_pp`, not confirmed by the plant) instead
+of the document's relative 5%. Re-swept the same full test window through
+the actual production `check_ab_deviation()` function: exceedance drops
+from 56.94% to **9.91%** (7,241/73,069). This does not resolve the
+underlying finding — the persistent ~0.40pp offset and the September 2024
+anomaly are unchanged facts about the sensors, just no longer inflated by
+a tolerance formula that didn't suit O2's magnitude. See decisions.md #46.
+
+**37. Main Steam Pressure ceiling — rare overall, but January 2024 is a
+real outlier (Validation Rule #13) — Design Document.** Full test-window
+sweep (73,427 rows, 2026-08-13): exceeds 92 kg/cm2(a) on only **2.18%** of
+ticks overall — confirms the single-tick spot-check's implication that
+this is rare, not routine. But NOT evenly spread: **January 2024 alone is
+24.5%** (3,225 rows); every other month is under 6%, most under 1%,
+December is exactly 0% (never reaching 92 all month). Reads as a real,
+period-specific event in January 2024, not a chronic condition — worth
+checking against maintenance/operations logs for that month, same pattern
+as Cluster 1's own date-specific findings.
+Still open: is 92 kg/cm2(a) the same concept as `DESIGN_STEAM_PARAMETERS`'
+90.2 kg/cm2 (nominal/rated design), or a genuine operating ceiling above
+it? Nothing in the repo clarifies this. Indirect evidence leans toward
+"92 is the real ceiling, 90.2 a nominal/target point below it": mean
+operating pressure is 88.77 (below both), but 17.32% of ticks already
+exceed 90.2 in otherwise-normal operation — if 90.2 were the actual hard
+limit, the plant would be routinely running "over design" 1 row in 6,
+which reads as less physically plausible than 90.2 being a target/nominal
+value with 92 as the real mechanical ceiling above it. Suggestive, not
+conclusive — still needs the plant/document owner to confirm.
+
+**38. O2 LHS/RHS persistent offset — worth a calibration check, not
+confirmed as expected or as a fault (Plant/Site Team).** The ~0.40pp
+RHS-higher-than-LHS bias is visible 83% of the time, all year — a
+one-directional, persistent pattern, not noise (noise would center near
+zero and flip sign roughly evenly). That shape is normally what prompts a
+calibration check in real O2-monitoring practice, especially since
+PAI-S03's excess-air control reads off these same two probes. But this
+is not confirmed as a fault either — a benign explanation (e.g.
+genuinely different physical sample-point locations for the LHS/RHS taps,
+same kind of open question already raised for SA Fan Head's two pressure
+taps in Cluster 4, item #12) hasn't been ruled out. Flagged as worth
+checking, not asserted either way.
 
 ---
 

@@ -80,9 +80,43 @@ shared/raw_loader.py (load_raw(), cached)
 - **Status**: Phases A, B, C, and D complete — `boiler_duty.*`
   (steam/feedwater) real, Efficiency Gauge zone real, dashboard layout
   matches the Dashboard_Method spec (Trend overlays, Alert Cards, Shift
-  Summary, Data Quality badge); everything else (fuel analysis, ash/refuse,
-  ambient, most gas measurements) simulated/assumed pending plant lab
-  report, weather source, and tag confirmations.
+  Summary, Data Quality badge). As of 2026-08-13 (decisions.md #43):
+  `fuel.*`, `refuse.*_distribution_pct`/`*_unburned_carbon_pct`, and
+  `ambient.*` are real static_config values from a plant engineering
+  document — no longer the library's reference-coal placeholder. Still
+  open: refuse ash *temperatures* (4 fields, still placeholder), most
+  `gas.*` (air-heater tag naming, no candidate confirmed).
+- **Real-static-data constants** (`efficiency_engine/adapter.py`):
+  `FUEL_ULTIMATE_PROXIMATE`, `FUEL_HHV_KJ_KG`, `REFUSE_ASH_SPLIT`,
+  `AMBIENT_CONDITIONS`, tracked against a fixed `PLANT_ENGINEERING_DOC_DATE`
+  (not re-evaluated to "now" per restart, unlike `GCV_LAST_UPDATED` — these
+  are periodic test-report values, not per-shift entries). `fuel.hhv_kj_kg`
+  and Gate 1's `GCV_KCAL_PER_KG` are deliberately NOT reconciled (~1.64%
+  apart, different source documents) so Gate 1 keeps two independent GCV
+  sources either side of its cross-check.
+- **14 Logical Filtering & Validation Rules** (plant engineering document,
+  2026-08-13, decisions.md #44) — `efficiency_engine/adapter.py`'s
+  `check_*()` functions + `run_validation_checks()` aggregator, backend
+  only (no frontend panel yet — not asked for). Rules 1-2 are real
+  blocking gates in `run_efficiency()` (before the library is called);
+  rule 3 cross-references the existing GCV Check; rules 4-14 are advisory,
+  returned in `result["validation_checks"]` (sorted list of 14, one entry
+  per rule except rule 6 which yields 4 — one per A/B pair). Rule 6 needed
+  6 new raw-tag columns (`SH3_PRESSURE_A/B`, `SH3_TEMP_A/B`, `O2_LHS/RHS`)
+  added to `hindalco_boiler9_pai_s02_v1.yaml`'s `parameters:` block; Steam
+  Flow A/B reused from Cluster 1's existing `self._cluster_view`, no
+  duplicate extraction. Rule 14 reuses Module 1's own
+  `self._param_runtime["steam_flow"].history`, no duplicate tracker.
+  Rule 6's O2 LHS/RHS sub-check uses an absolute tolerance (0.85pp,
+  `scoring.o2_ab_absolute_tolerance_pp`, `status:
+  configurable_pending_confirmation`) instead of the document's relative
+  5% — the other 3 pairs are unaffected (decisions.md #46).
+- **`data_source` vocabulary**: `"documented"` (decisions.md #47) — a real
+  plant-engineering-document value (fuel.*, refuse.*_distribution_pct/
+  _unburned_carbon_pct, ambient.*, gcv_check.*), rendered as a green
+  "DOCUMENTED" chip (`StatusChips.jsx`), distinct from `"static_config"`/
+  grey "ASSUMED" (a generic Awes/library default, e.g. `assumptions.*`).
+  Refuse ash temperatures (still placeholder) stay `"simulated"`.
 - **Spec-alignment data-confidence gates** (Phase A of the PAI-S02 Spec
   Alignment brief, see decisions.md #29-32), all computed in
   `adapter.py`/wired in `state_builder.py`'s `_tick()`, never inside Awes's
@@ -151,7 +185,12 @@ shared/raw_loader.py (load_raw(), cached)
   by `_shift_key()` (fixed 8-hour blocks over the replayed row's own
   `source_timestamp`). Exposed as `shift_summary` (last 12 shifts) in
   `/api/efficiency`; rendered as a table, documented as a fixed-window
-  simplification, not a real plant shift schedule.
+  simplification, not a real plant shift schedule. GCV column uses
+  `FUEL_HHV_KCAL_KG` (`fuel.hhv_kj_kg`'s kcal/kg form — the GCV that
+  actually drives every other column in the row), not `GCV_KCAL_PER_KG`
+  (Gate 1's deliberately-independent constant) — fixed 2026-08-14, was an
+  oversight predating decision 43's real-fuel wiring, not a deliberate
+  choice (decisions.md #48).
 - **Efficiency Trend Panel overlays** (Phase D) — Design/Amber/Red
   reference lines (same `zone.*` values the gauge uses, expressed as
   absolute efficiency) and a secondary Y-axis for unit load
